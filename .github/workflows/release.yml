@@ -51,17 +51,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-          releaseName: 'MeterAI v__VERSION__'
+          tagName: ${{ github.ref_name }}
+          releaseName: 'MeterAI ${{ github.ref_name }}'
           releaseBody: |
-            ## What's Changed
+            ## What's New
 
-            See the assets below to download the installer for your platform.
+            Multi-provider AI usage tracker for monitoring your Claude, OpenAI, and other AI API usage.
 
             ### Downloads
-            - **Windows**: `.exe` or `.msi` installer
-            - **macOS**: `.dmg` disk image
+            - **Windows**: `.exe` installer (recommended) or `.msi` package
+            - **macOS**: `.dmg` disk image (Intel & Apple Silicon)
             - **Linux**: `.AppImage` or `.deb` package
-          releaseDraft: true
+
+            ### Security
+            - All API communications encrypted via HTTPS
+            - API keys stored in OS secure credential manager
+            - Source code available for security auditing
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
