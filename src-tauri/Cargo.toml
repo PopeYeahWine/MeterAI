@@ -1,6 +1,6 @@
 [package]
 name = "meter-ai"
-version = "1.0.0"
+version = "1.1.1"
 description = "Multi-provider AI usage tracker - Monitor your Claude, OpenAI, and other AI API usage"
 authors = ["MeterAI"]
 license = "MIT"
