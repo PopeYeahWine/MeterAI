@@ -35,7 +35,11 @@
       "Bash(npx tsc:*)",
       "Bash(npm audit:*)",
       "Bash(npm outdated:*)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(cmd /c \"cd /d c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI && set PATH=%PATH%;%USERPROFILE%\\\\.cargo\\\\bin && npm run tauri:build\")",
+      "Bash(PATH=\"$PATH:/c/Users/pierr/.cargo/bin\")",
+      "Bash(gh release create:*)",
+      "Bash(cmd /c \"where gh\")"
     ]
   }
 }
