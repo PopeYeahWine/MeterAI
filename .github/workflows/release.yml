@@ -14,15 +14,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest'
+          # macOS ARM64 (Apple Silicon) - use macos-14 which is ARM64
+          - platform: 'macos-14'
             args: '--target aarch64-apple-darwin'
             rust_targets: 'aarch64-apple-darwin'
-          - platform: 'macos-13'
+          # macOS x86_64 (Intel) - use macos-14 with x86_64 target
+          - platform: 'macos-14'
             args: '--target x86_64-apple-darwin'
             rust_targets: 'x86_64-apple-darwin'
+          # Linux
           - platform: 'ubuntu-20.04'
             args: ''
             rust_targets: ''
+          # Windows
           - platform: 'windows-latest'
             args: ''
             rust_targets: ''
@@ -40,6 +44,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_targets }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
 
       - name: Install dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-20.04'
