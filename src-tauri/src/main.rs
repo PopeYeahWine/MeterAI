@@ -3,9 +3,10 @@
     windows_subsystem = "windows"
 )]
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{Local, Utc};
 use notify_rust::Notification;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -13,38 +14,70 @@ use tauri::{
     CustomMenuItem, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem,
     Window,
 };
+use thiserror::Error;
 
-// ============== DATA STRUCTURES ==============
+// ============== ERROR HANDLING ==============
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct UsageData {
-    used: u32,
-    limit: u32,
-    percent: u32,
-    #[serde(rename = "resetTime")]
-    reset_time: i64, // Unix timestamp
-    history: Vec<HistoryEntry>,
+#[derive(Error, Debug)]
+pub enum AppError {
+    #[error("API error: {0}")]
+    ApiError(String),
+    #[error("Network error: {0}")]
+    NetworkError(String),
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+    #[error("Keyring error: {0}")]
+    KeyringError(String),
+}
+
+impl Serialize for AppError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+// ============== PROVIDER TYPES ==============
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderType {
+    Manual,
+    Anthropic,
+    OpenAI,
+}
+
+impl Default for ProviderType {
+    fn default() -> Self {
+        ProviderType::Manual
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct HistoryEntry {
-    time: String,
-    used: u32,
-    limit: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Settings {
-    limit: u32,
+pub struct ProviderConfig {
+    pub provider_type: ProviderType,
+    pub name: String,
+    pub enabled: bool,
+    #[serde(skip_serializing)]
+    pub api_key: Option<String>,
+    pub has_api_key: bool,
+    pub limit: u32,
     #[serde(rename = "alertThresholds")]
-    alert_thresholds: Vec<u32>,
+    pub alert_thresholds: Vec<u32>,
     #[serde(rename = "resetIntervalHours")]
-    reset_interval_hours: u32,
+    pub reset_interval_hours: u32,
 }
 
-impl Default for Settings {
+impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
+            provider_type: ProviderType::Manual,
+            name: "Manual".to_string(),
+            enabled: true,
+            api_key: None,
+            has_api_key: false,
             limit: 100,
             alert_thresholds: vec![70, 90, 100],
             reset_interval_hours: 4,
@@ -52,27 +85,124 @@ impl Default for Settings {
     }
 }
 
+// ============== DATA STRUCTURES ==============
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct AppState {
-    usage: UsageData,
-    settings: Settings,
+pub struct UsageData {
+    pub used: u32,
+    pub limit: u32,
+    pub percent: u32,
+    #[serde(rename = "resetTime")]
+    pub reset_time: i64,
+    pub history: Vec<HistoryEntry>,
+    #[serde(rename = "providerType")]
+    pub provider_type: ProviderType,
+    #[serde(rename = "providerName")]
+    pub provider_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub time: String,
+    pub used: u32,
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderUsage {
+    pub usage: UsageData,
+    pub config: ProviderConfig,
     #[serde(skip)]
-    notified_thresholds: Vec<u32>,
+    pub notified_thresholds: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppState {
+    pub providers: HashMap<String, ProviderUsage>,
+    #[serde(rename = "activeProvider")]
+    pub active_provider: String,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        let reset_interval = 4 * 3600; // 4 heures en secondes
-        Self {
-            usage: UsageData {
-                used: 0,
-                limit: 100,
-                percent: 0,
-                reset_time: Utc::now().timestamp() + reset_interval,
-                history: vec![],
+        let mut providers = HashMap::new();
+        let reset_interval = 4 * 3600;
+
+        // Default manual provider
+        providers.insert(
+            "manual".to_string(),
+            ProviderUsage {
+                usage: UsageData {
+                    used: 0,
+                    limit: 100,
+                    percent: 0,
+                    reset_time: Utc::now().timestamp() + reset_interval,
+                    history: vec![],
+                    provider_type: ProviderType::Manual,
+                    provider_name: "Manual".to_string(),
+                },
+                config: ProviderConfig::default(),
+                notified_thresholds: vec![],
             },
-            settings: Settings::default(),
-            notified_thresholds: vec![],
+        );
+
+        // Anthropic provider (disabled by default)
+        providers.insert(
+            "anthropic".to_string(),
+            ProviderUsage {
+                usage: UsageData {
+                    used: 0,
+                    limit: 100,
+                    percent: 0,
+                    reset_time: Utc::now().timestamp() + reset_interval,
+                    history: vec![],
+                    provider_type: ProviderType::Anthropic,
+                    provider_name: "Anthropic (Claude)".to_string(),
+                },
+                config: ProviderConfig {
+                    provider_type: ProviderType::Anthropic,
+                    name: "Anthropic (Claude)".to_string(),
+                    enabled: false,
+                    api_key: None,
+                    has_api_key: false,
+                    limit: 100,
+                    alert_thresholds: vec![70, 90, 100],
+                    reset_interval_hours: 4,
+                },
+                notified_thresholds: vec![],
+            },
+        );
+
+        // OpenAI provider (disabled by default)
+        providers.insert(
+            "openai".to_string(),
+            ProviderUsage {
+                usage: UsageData {
+                    used: 0,
+                    limit: 100,
+                    percent: 0,
+                    reset_time: Utc::now().timestamp() + reset_interval,
+                    history: vec![],
+                    provider_type: ProviderType::OpenAI,
+                    provider_name: "OpenAI (ChatGPT)".to_string(),
+                },
+                config: ProviderConfig {
+                    provider_type: ProviderType::OpenAI,
+                    name: "OpenAI (ChatGPT)".to_string(),
+                    enabled: false,
+                    api_key: None,
+                    has_api_key: false,
+                    limit: 100,
+                    alert_thresholds: vec![70, 90, 100],
+                    reset_interval_hours: 4,
+                },
+                notified_thresholds: vec![],
+            },
+        );
+
+        Self {
+            providers,
+            active_provider: "manual".to_string(),
         }
     }
 }
@@ -81,7 +211,7 @@ impl Default for AppState {
 
 fn get_data_path() -> PathBuf {
     let mut path = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
-    path.push("claude-usage-tracker");
+    path.push("meter-ai");
     fs::create_dir_all(&path).ok();
     path.push("data.json");
     path
@@ -91,7 +221,16 @@ fn load_state() -> AppState {
     let path = get_data_path();
     if path.exists() {
         if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(state) = serde_json::from_str::<AppState>(&content) {
+            if let Ok(mut state) = serde_json::from_str::<AppState>(&content) {
+                // Load API keys from secure storage
+                for (provider_id, provider) in state.providers.iter_mut() {
+                    if let Ok(entry) = keyring::Entry::new("meter-ai", provider_id) {
+                        if let Ok(key) = entry.get_password() {
+                            provider.config.api_key = Some(key);
+                            provider.config.has_api_key = true;
+                        }
+                    }
+                }
                 return state;
             }
         }
@@ -106,41 +245,60 @@ fn save_state(state: &AppState) {
     }
 }
 
+// ============== SECURE API KEY STORAGE ==============
+
+fn save_api_key(provider_id: &str, api_key: &str) -> Result<(), AppError> {
+    let entry = keyring::Entry::new("meter-ai", provider_id)
+        .map_err(|e| AppError::KeyringError(e.to_string()))?;
+    entry
+        .set_password(api_key)
+        .map_err(|e| AppError::KeyringError(e.to_string()))?;
+    Ok(())
+}
+
+fn delete_api_key(provider_id: &str) -> Result<(), AppError> {
+    if let Ok(entry) = keyring::Entry::new("meter-ai", provider_id) {
+        entry.delete_credential().ok();
+    }
+    Ok(())
+}
+
 // ============== NOTIFICATIONS ==============
 
 fn send_notification(title: &str, body: &str) {
     Notification::new()
         .summary(title)
         .body(body)
-        .appname("Claude Usage Tracker")
+        .appname("MeterAI")
         .timeout(5000)
         .show()
         .ok();
 }
 
-fn check_and_notify(state: &mut AppState) {
-    let percent = state.usage.percent;
+fn check_and_notify(provider: &mut ProviderUsage) {
+    let percent = provider.usage.percent;
 
-    for threshold in &state.settings.alert_thresholds {
-        if percent >= *threshold && !state.notified_thresholds.contains(threshold) {
-            state.notified_thresholds.push(*threshold);
+    for threshold in &provider.config.alert_thresholds {
+        if percent >= *threshold && !provider.notified_thresholds.contains(threshold) {
+            provider.notified_thresholds.push(*threshold);
 
+            let provider_name = &provider.config.name;
             let (title, body) = if *threshold >= 100 {
                 (
-                    "⚠️ Limite Claude atteinte!",
-                    format!("Vous avez utilisé 100% de votre quota. Reset dans quelques heures."),
+                    format!("⚠️ {} - Limite atteinte!", provider_name),
+                    format!("Vous avez utilisé 100% de votre quota."),
                 )
             } else {
                 (
-                    &format!("⚡ {}% du quota Claude", threshold),
+                    format!("⚡ {} - {}%", provider_name, threshold),
                     format!(
                         "Vous avez utilisé {} requêtes sur {}.",
-                        state.usage.used, state.usage.limit
+                        provider.usage.used, provider.usage.limit
                     ),
                 )
             };
 
-            send_notification(title, &body);
+            send_notification(&title, &body);
         }
     }
 }
@@ -150,103 +308,244 @@ fn check_and_notify(state: &mut AppState) {
 #[tauri::command]
 fn get_usage(state: tauri::State<Mutex<AppState>>) -> UsageData {
     let state = state.lock().unwrap();
-    state.usage.clone()
+    let active = &state.active_provider;
+    state
+        .providers
+        .get(active)
+        .map(|p| p.usage.clone())
+        .unwrap_or_else(|| UsageData {
+            used: 0,
+            limit: 100,
+            percent: 0,
+            reset_time: Utc::now().timestamp() + 4 * 3600,
+            history: vec![],
+            provider_type: ProviderType::Manual,
+            provider_name: "Manual".to_string(),
+        })
 }
 
 #[tauri::command]
-fn get_settings(state: tauri::State<Mutex<AppState>>) -> Settings {
+fn get_all_providers(state: tauri::State<Mutex<AppState>>) -> Vec<ProviderConfig> {
     let state = state.lock().unwrap();
-    state.settings.clone()
+    state
+        .providers
+        .values()
+        .map(|p| {
+            let mut config = p.config.clone();
+            config.api_key = None; // Never send API keys to frontend
+            config
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn get_active_provider(state: tauri::State<Mutex<AppState>>) -> String {
+    let state = state.lock().unwrap();
+    state.active_provider.clone()
+}
+
+#[tauri::command]
+fn set_active_provider(
+    provider_id: String,
+    state: tauri::State<Mutex<AppState>>,
+    window: Window,
+) -> Result<(), AppError> {
+    let mut state = state.lock().unwrap();
+    if state.providers.contains_key(&provider_id) {
+        state.active_provider = provider_id.clone();
+        save_state(&state);
+        if let Some(provider) = state.providers.get(&provider_id) {
+            window.emit("usage-updated", provider.usage.clone()).ok();
+        }
+        Ok(())
+    } else {
+        Err(AppError::ConfigError("Provider not found".to_string()))
+    }
+}
+
+#[tauri::command]
+fn configure_provider(
+    provider_id: String,
+    api_key: Option<String>,
+    limit: u32,
+    alert_thresholds: Vec<u32>,
+    reset_interval_hours: u32,
+    enabled: bool,
+    state: tauri::State<Mutex<AppState>>,
+    window: Window,
+) -> Result<(), AppError> {
+    let mut state = state.lock().unwrap();
+
+    if let Some(provider) = state.providers.get_mut(&provider_id) {
+        // Save API key securely if provided
+        if let Some(key) = &api_key {
+            if !key.is_empty() {
+                save_api_key(&provider_id, key)?;
+                provider.config.api_key = Some(key.clone());
+                provider.config.has_api_key = true;
+            }
+        }
+
+        provider.config.limit = limit;
+        provider.config.alert_thresholds = alert_thresholds;
+        provider.config.reset_interval_hours = reset_interval_hours;
+        provider.config.enabled = enabled;
+        provider.usage.limit = limit;
+        provider.usage.percent =
+            ((provider.usage.used as f64 / provider.usage.limit as f64) * 100.0) as u32;
+
+        save_state(&state);
+
+        if state.active_provider == provider_id {
+            window.emit("usage-updated", provider.usage.clone()).ok();
+        }
+
+        Ok(())
+    } else {
+        Err(AppError::ConfigError("Provider not found".to_string()))
+    }
+}
+
+#[tauri::command]
+fn remove_api_key(
+    provider_id: String,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<(), AppError> {
+    let mut state = state.lock().unwrap();
+
+    if let Some(provider) = state.providers.get_mut(&provider_id) {
+        delete_api_key(&provider_id)?;
+        provider.config.api_key = None;
+        provider.config.has_api_key = false;
+        save_state(&state);
+        Ok(())
+    } else {
+        Err(AppError::ConfigError("Provider not found".to_string()))
+    }
 }
 
 #[tauri::command]
 fn add_request(count: u32, state: tauri::State<Mutex<AppState>>, window: Window) {
     let mut state = state.lock().unwrap();
+    let active = state.active_provider.clone();
 
-    // Vérifier si reset nécessaire
-    let now = Utc::now().timestamp();
-    if now >= state.usage.reset_time {
-        // Sauvegarder dans l'historique
-        let time_str = Local::now().format("%H:%M").to_string();
-        state.usage.history.insert(
-            0,
-            HistoryEntry {
-                time: time_str,
-                used: state.usage.used,
-                limit: state.usage.limit,
-            },
-        );
-        if state.usage.history.len() > 6 {
-            state.usage.history.pop();
+    if let Some(provider) = state.providers.get_mut(&active) {
+        // Check if reset needed
+        let now = Utc::now().timestamp();
+        if now >= provider.usage.reset_time {
+            // Save to history
+            let time_str = Local::now().format("%H:%M").to_string();
+            provider.usage.history.insert(
+                0,
+                HistoryEntry {
+                    time: time_str,
+                    used: provider.usage.used,
+                    limit: provider.usage.limit,
+                },
+            );
+            if provider.usage.history.len() > 6 {
+                provider.usage.history.pop();
+            }
+
+            // Reset
+            provider.usage.used = 0;
+            provider.usage.reset_time =
+                now + (provider.config.reset_interval_hours as i64 * 3600);
+            provider.notified_thresholds.clear();
+
+            send_notification(
+                &format!("🔄 {} - Quota réinitialisé!", provider.config.name),
+                &format!(
+                    "Votre quota de {} requêtes est à nouveau disponible.",
+                    provider.config.limit
+                ),
+            );
         }
 
-        // Reset
-        state.usage.used = 0;
-        state.usage.reset_time = now + (state.settings.reset_interval_hours as i64 * 3600);
-        state.notified_thresholds.clear();
+        // Add requests
+        provider.usage.used = (provider.usage.used + count).min(provider.usage.limit);
+        provider.usage.percent =
+            ((provider.usage.used as f64 / provider.usage.limit as f64) * 100.0) as u32;
 
-        send_notification(
-            "🔄 Quota Claude réinitialisé!",
-            &format!(
-                "Votre quota de {} requêtes est à nouveau disponible.",
-                state.settings.limit
-            ),
-        );
+        // Check notifications
+        check_and_notify(provider);
+
+        // Save and emit
+        save_state(&state);
+        window.emit("usage-updated", provider.usage.clone()).ok();
     }
-
-    // Ajouter les requêtes
-    state.usage.used = (state.usage.used + count).min(state.usage.limit);
-    state.usage.percent = ((state.usage.used as f64 / state.usage.limit as f64) * 100.0) as u32;
-
-    // Vérifier les notifications
-    check_and_notify(&mut state);
-
-    // Sauvegarder
-    save_state(&state);
-
-    // Émettre l'événement de mise à jour
-    window.emit("usage-updated", state.usage.clone()).ok();
 }
 
 #[tauri::command]
 fn reset_usage(state: tauri::State<Mutex<AppState>>, window: Window) {
     let mut state = state.lock().unwrap();
+    let active = state.active_provider.clone();
 
-    // Sauvegarder dans l'historique
-    let time_str = Local::now().format("%H:%M").to_string();
-    state.usage.history.insert(
-        0,
-        HistoryEntry {
-            time: time_str,
-            used: state.usage.used,
-            limit: state.usage.limit,
-        },
-    );
-    if state.usage.history.len() > 6 {
-        state.usage.history.pop();
+    if let Some(provider) = state.providers.get_mut(&active) {
+        // Save to history
+        let time_str = Local::now().format("%H:%M").to_string();
+        provider.usage.history.insert(
+            0,
+            HistoryEntry {
+                time: time_str,
+                used: provider.usage.used,
+                limit: provider.usage.limit,
+            },
+        );
+        if provider.usage.history.len() > 6 {
+            provider.usage.history.pop();
+        }
+
+        // Reset
+        provider.usage.used = 0;
+        provider.usage.percent = 0;
+        provider.usage.reset_time =
+            Utc::now().timestamp() + (provider.config.reset_interval_hours as i64 * 3600);
+        provider.notified_thresholds.clear();
+
+        save_state(&state);
+        window.emit("usage-updated", provider.usage.clone()).ok();
     }
+}
 
-    // Reset
-    state.usage.used = 0;
-    state.usage.percent = 0;
-    state.usage.reset_time =
-        Utc::now().timestamp() + (state.settings.reset_interval_hours as i64 * 3600);
-    state.notified_thresholds.clear();
-
-    save_state(&state);
-    window.emit("usage-updated", state.usage.clone()).ok();
+// Legacy command for backward compatibility
+#[tauri::command]
+fn get_settings(state: tauri::State<Mutex<AppState>>) -> ProviderConfig {
+    let state = state.lock().unwrap();
+    let active = &state.active_provider;
+    state
+        .providers
+        .get(active)
+        .map(|p| {
+            let mut config = p.config.clone();
+            config.api_key = None;
+            config
+        })
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn save_settings(settings: Settings, state: tauri::State<Mutex<AppState>>, window: Window) {
+fn save_settings(
+    limit: u32,
+    alert_thresholds: Vec<u32>,
+    reset_interval_hours: u32,
+    state: tauri::State<Mutex<AppState>>,
+    window: Window,
+) {
     let mut state = state.lock().unwrap();
+    let active = state.active_provider.clone();
 
-    state.settings = settings.clone();
-    state.usage.limit = settings.limit;
-    state.usage.percent = ((state.usage.used as f64 / state.usage.limit as f64) * 100.0) as u32;
+    if let Some(provider) = state.providers.get_mut(&active) {
+        provider.config.limit = limit;
+        provider.config.alert_thresholds = alert_thresholds;
+        provider.config.reset_interval_hours = reset_interval_hours;
+        provider.usage.limit = limit;
+        provider.usage.percent =
+            ((provider.usage.used as f64 / provider.usage.limit as f64) * 100.0) as u32;
 
-    save_state(&state);
-    window.emit("usage-updated", state.usage.clone()).ok();
+        save_state(&state);
+        window.emit("usage-updated", provider.usage.clone()).ok();
+    }
 }
 
 // ============== SYSTEM TRAY ==============
@@ -327,14 +626,18 @@ fn main() {
         .on_system_tray_event(handle_tray_event)
         .invoke_handler(tauri::generate_handler![
             get_usage,
-            get_settings,
+            get_all_providers,
+            get_active_provider,
+            set_active_provider,
+            configure_provider,
+            remove_api_key,
             add_request,
             reset_usage,
+            get_settings,
             save_settings
         ])
         .on_window_event(|event| match event.event() {
             tauri::WindowEvent::CloseRequested { api, .. } => {
-                // Masquer au lieu de fermer
                 event.window().hide().ok();
                 api.prevent_close();
             }

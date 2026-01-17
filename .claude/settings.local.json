@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh repo view:*)",
+      "Bash(gh auth status:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: Multi-provider support and project rename to MeterAI\n\n- Rename project from Claude Usage Tracker to MeterAI\n- Add multi-provider architecture \\(Manual, Anthropic, OpenAI\\)\n- Implement secure API key storage using OS credential manager\n- Add provider selection and configuration UI\n- Update README with separate sections for users and developers\n- Add GitHub Actions for CI and automated releases\n- Cross-platform support \\(Windows, macOS, Linux\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
+    ]
+  }
+}

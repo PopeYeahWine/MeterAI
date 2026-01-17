@@ -6,7 +6,7 @@
     "distDir": "../dist"
   },
   "package": {
-    "productName": "Claude Usage Tracker",
+    "productName": "MeterAI",
     "version": "1.0.0"
   },
   "tauri": {
@@ -20,6 +20,14 @@
       },
       "notification": {
         "all": true
+      },
+      "http": {
+        "all": true,
+        "request": true,
+        "scope": [
+          "https://api.anthropic.com/*",
+          "https://api.openai.com/*"
+        ]
       }
     },
     "bundle": {
@@ -37,8 +45,8 @@
         "icons/icon.icns",
         "icons/icon.ico"
       ],
-      "identifier": "com.claude.usage-tracker",
-      "longDescription": "Widget Windows pour suivre la consommation Claude AI en temps réel avec notifications et system tray",
+      "identifier": "com.meterai.app",
+      "longDescription": "Multi-provider AI usage tracker - Monitor your Claude, OpenAI, and other AI API usage in real-time",
       "macOS": {
         "entitlements": null,
         "exceptionDomain": "",
@@ -47,7 +55,7 @@
         "signingIdentity": null
       },
       "resources": [],
-      "shortDescription": "Suivi consommation Claude AI",
+      "shortDescription": "Multi-provider AI Usage Tracker",
       "targets": "all",
       "windows": {
         "certificateThumbprint": null,
@@ -71,7 +79,7 @@
         "fullscreen": false,
         "height": 400,
         "resizable": false,
-        "title": "Claude Usage Tracker",
+        "title": "MeterAI",
         "width": 340,
         "decorations": false,
         "transparent": true,

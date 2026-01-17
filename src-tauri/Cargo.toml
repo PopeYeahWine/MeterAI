@@ -1,10 +1,10 @@
 [package]
-name = "claude-usage-tracker"
+name = "meter-ai"
 version = "1.0.0"
-description = "Widget Windows pour suivre la consommation Claude AI"
-authors = ["Claude Usage Tracker"]
+description = "Multi-provider AI usage tracker - Monitor your Claude, OpenAI, and other AI API usage"
+authors = ["MeterAI"]
 license = "MIT"
-repository = ""
+repository = "https://github.com/PopeYeahWine/MeterAI"
 edition = "2021"
 
 [build-dependencies]
@@ -18,6 +18,9 @@ tokio = { version = "1", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 notify-rust = "4"
 dirs = "5"
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+keyring = "2"
+thiserror = "1.0"
 
 [features]
 default = ["custom-protocol"]

@@ -1,146 +1,194 @@
-# Claude Usage Tracker
+# MeterAI
 
-Widget Windows flottant pour suivre votre consommation Claude AI en temps réel.
+Multi-provider AI usage tracker - Monitor your Claude, OpenAI, and other AI API usage in real-time.
 
 ![Preview](docs/preview.png)
 
-## Fonctionnalités
+## Features
 
-- **Widget always-on-top** : Barre flottante discrète et déplaçable
-- **Suivi en temps réel** : Pourcentage d'utilisation, requêtes restantes
-- **Compte à rebours** : Temps restant avant reset du quota
-- **Notifications Windows** : Alertes à 70%, 90%, 100% (configurable)
-- **System Tray** : Minimisation dans la zone de notification
-- **Historique** : Dernières périodes d'utilisation
-- **Persistance** : Les données sont sauvegardées localement
+- **Multi-Provider Support**: Track usage for Anthropic (Claude), OpenAI (ChatGPT), and manual tracking
+- **Always-on-Top Widget**: Floating, draggable, and unobtrusive
+- **Real-Time Monitoring**: Usage percentage, remaining requests, countdown to reset
+- **Windows/macOS Notifications**: Configurable alerts at custom thresholds (70%, 90%, 100%)
+- **System Tray Integration**: Quick access from notification area
+- **History Tracking**: View past usage periods
+- **Secure API Key Storage**: Keys stored in OS credential manager (Windows Credential Manager / macOS Keychain)
+- **Cross-Platform**: Windows, macOS, and Linux support
 
-## Installation
+---
 
-### Prérequis
+## For Users (Installation)
 
-- [Node.js](https://nodejs.org/) v18+
-- [Rust](https://rustup.rs/) (pour compiler Tauri)
-- Windows 10/11
+**No development tools required!** Download and install like any regular application.
 
-### Installation rapide
+### Download
 
-```bash
-# Cloner ou copier le projet
-cd claude-usage-tracker
+Go to [Releases](https://github.com/PopeYeahWine/MeterAI/releases) and download:
 
-# Installer les dépendances
-npm install
+| Platform | File |
+|----------|------|
+| Windows | `MeterAI_x.x.x_x64-setup.exe` or `MeterAI_x.x.x_x64_en-US.msi` |
+| macOS | `MeterAI_x.x.x_x64.dmg` |
+| Linux | `MeterAI_x.x.x_amd64.AppImage` or `.deb` |
 
-# Lancer en mode développement
-npm run tauri:dev
-```
+### Quick Start
 
-### Créer l'exécutable
+1. Install and launch MeterAI
+2. Click the **lightning icon** to open Providers settings
+3. Configure your preferred provider(s):
+   - **Manual**: Count requests manually (no API key needed)
+   - **Anthropic (Claude)**: Enter your Anthropic API key
+   - **OpenAI (ChatGPT)**: Enter your OpenAI API key
+4. Click on a provider to select it as active
+5. Use **+1 Requete** / **+5** to track your usage
 
-```bash
-npm run tauri:build
-```
+### System Tray
 
-L'exécutable sera dans `src-tauri/target/release/claude-usage-tracker.exe`
-
-## Utilisation
-
-### Comptage manuel (Estimation simple)
-
-Puisque vous avez choisi l'approche "estimation simple", vous devez incrémenter le compteur manuellement :
-
-1. **+1 Requête** : Cliquez après chaque appel API Claude
-2. **+5** : Pour des opérations multiples
-3. **Reset** : Réinitialiser manuellement si besoin
-
-### Raccourcis System Tray
-
-Clic droit sur l'icône dans la barre des tâches :
-- **Afficher** : Réaffiche le widget
-- **+1 / +5 Requêtes** : Incrémenter rapidement
-- **Reset quota** : Réinitialiser
-- **Quitter** : Fermer l'application
+Right-click the tray icon for quick actions:
+- **Afficher**: Show widget
+- **+1 / +5 Requetes**: Quick increment
+- **Reset quota**: Reset counter
+- **Quitter**: Exit application
 
 ### Configuration
 
-Cliquez sur ⚙️ dans le widget pour configurer :
-- **Limite par période** : Nombre max de requêtes (défaut: 100)
-- **Période de reset** : Intervalle en heures (défaut: 4h)
-- **Seuils d'alertes** : Pourcentages pour les notifications
+For each provider, you can configure:
+- **API Key**: Your provider API key (stored securely)
+- **Limit per period**: Maximum requests (default: 100)
+- **Reset period**: Interval in hours (default: 4h)
+- **Alert thresholds**: Notification percentages (default: 70, 90, 100)
 
-## Structure du projet
+### Data Storage
+
+Your data is stored locally:
+- **Windows**: `%LOCALAPPDATA%\meter-ai\data.json`
+- **macOS**: `~/Library/Application Support/meter-ai/data.json`
+- **Linux**: `~/.local/share/meter-ai/data.json`
+
+API keys are stored in the OS secure credential manager (never in plain text).
+
+---
+
+## For Developers
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org/) v18+
+- [Rust](https://rustup.rs/) (for compiling Tauri)
+- Platform-specific dependencies:
+  - **Windows**: Visual Studio Build Tools with C++ workload
+  - **macOS**: Xcode Command Line Tools
+  - **Linux**: `build-essential`, `libgtk-3-dev`, `libwebkit2gtk-4.0-dev`, `libssl-dev`
+
+### Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/PopeYeahWine/MeterAI.git
+cd MeterAI
+
+# Install dependencies
+npm install
+
+# Run in development mode
+npm run tauri:dev
+```
+
+### Build for Production
+
+```bash
+# Build the application
+npm run tauri:build
+```
+
+Output locations:
+- **Windows**: `src-tauri/target/release/meter-ai.exe`
+- **macOS**: `src-tauri/target/release/bundle/dmg/`
+- **Linux**: `src-tauri/target/release/bundle/appimage/`
+
+### Project Structure
 
 ```
-claude-usage-tracker/
-├── src/                    # Frontend React
-│   ├── App.tsx             # Composant principal
-│   ├── main.tsx            # Point d'entrée
+MeterAI/
+├── src/                    # Frontend (React + TypeScript)
+│   ├── App.tsx             # Main component
+│   ├── main.tsx            # Entry point
 │   └── styles.css          # Styles
-├── src-tauri/              # Backend Rust
-│   ├── src/main.rs         # Logique principale
-│   ├── tauri.conf.json     # Configuration Tauri
-│   └── icons/              # Icônes
+├── src-tauri/              # Backend (Rust + Tauri)
+│   ├── src/main.rs         # Main logic & providers
+│   ├── Cargo.toml          # Rust dependencies
+│   ├── tauri.conf.json     # Tauri configuration
+│   └── icons/              # App icons
 ├── package.json
 └── README.md
 ```
 
-## Données persistantes
+### Adding a New Provider
 
-Les données sont stockées dans :
-```
-%LOCALAPPDATA%\claude-usage-tracker\data.json
-```
-
-## Évolutions possibles
-
-### Comptage automatique (recommandé pour le futur)
-
-Pour un comptage automatique, vous pourriez :
-
-1. **Proxy local** : Intercepter vos requêtes API
-2. **Extension navigateur** : Si vous utilisez l'interface web Claude
-3. **Wrapper SDK** : Modifier vos appels API pour notifier le widget
-
-Exemple de wrapper Python :
-```python
-import requests
-
-TRACKER_URL = "http://localhost:8765/add"
-
-def call_claude_api(prompt):
-    response = claude_client.messages.create(...)
-    # Notifier le tracker
-    requests.post(TRACKER_URL, json={"count": 1})
-    return response
+1. Add the provider type in `src-tauri/src/main.rs`:
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ProviderType {
+    Manual,
+    Anthropic,
+    OpenAI,
+    NewProvider,  // Add here
+}
 ```
 
-## Dépannage
+2. Initialize the provider in `AppState::default()`
 
-### Le widget ne démarre pas
-- Vérifiez que Rust est installé : `rustc --version`
-- Réinstallez les dépendances : `npm install`
+3. Update the frontend in `src/App.tsx`:
+   - Add icon and color in `getProviderIcon()` and `getProviderColor()`
 
-### Pas de notifications
-- Vérifiez les paramètres de notifications Windows
-- Autorisez l'application dans les paramètres de confidentialité
+### Tech Stack
 
-### Icône manquante dans le tray
-- Créez les fichiers d'icônes (voir section ci-dessous)
+- **Frontend**: React 18, TypeScript, Vite
+- **Backend**: Rust, Tauri 1.5
+- **Secure Storage**: `keyring` crate (OS credential manager)
+- **Notifications**: `notify-rust` crate
 
-## Générer les icônes
+---
 
-Pour générer les icônes à partir du SVG :
+## FAQ
 
-```bash
-# Avec ImageMagick
-magick convert src-tauri/icons/icon.svg -resize 32x32 src-tauri/icons/32x32.png
-magick convert src-tauri/icons/icon.svg -resize 128x128 src-tauri/icons/128x128.png
-magick convert src-tauri/icons/icon.svg -resize 256x256 src-tauri/icons/128x128@2x.png
-magick convert src-tauri/icons/icon.svg -resize 256x256 src-tauri/icons/icon.ico
-```
+### Is the binary self-contained?
 
-Ou utilisez un convertisseur en ligne SVG → ICO/PNG.
+**Yes.** The built application is completely standalone. End users do not need Node.js, Rust, or any development tools installed. Tauri compiles everything into a single native binary.
 
-## Licence
+### How are API keys secured?
+
+API keys are stored in your operating system's credential manager:
+- **Windows**: Windows Credential Manager
+- **macOS**: Keychain
+- **Linux**: Secret Service API (GNOME Keyring, KWallet)
+
+Keys are never stored in plain text files.
+
+### Cross-platform compatibility?
+
+MeterAI works on:
+- Windows 10/11 (x64)
+- macOS 10.15+ (x64, ARM via Rosetta)
+- Linux (most distributions with GTK3)
+
+---
+
+## Troubleshooting
+
+### Widget doesn't start
+- **Windows**: Install [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) if not present
+- **Linux**: Ensure `libwebkit2gtk-4.0` is installed
+
+### No notifications
+- Check your OS notification settings
+- Allow the application in privacy settings
+
+### Missing tray icon
+- Ensure icon files exist in `src-tauri/icons/`
+
+---
+
+## License
 
 MIT
