@@ -24,6 +24,10 @@
       "process": {
         "all": true
       },
+      "dialog": {
+        "open": true,
+        "save": false
+      },
       "http": {
         "all": false,
         "request": true,

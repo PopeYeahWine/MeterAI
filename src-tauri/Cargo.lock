@@ -2303,6 +2303,7 @@ dependencies = [
  "tauri-build",
  "thiserror 1.0.69",
  "tokio",
+ "winreg 0.52.0",
 ]
 
 [[package]]

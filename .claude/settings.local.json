@@ -67,7 +67,11 @@
       "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" workflow run release.yml --ref v1.1.0)",
       "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" run list --limit 3)",
       "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" release delete v1.1.0 --yes)",
-      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" run view 21100361060)"
+      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" run view 21100361060)",
+      "Bash(cmd.exe /c \"cd /d c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\\\\src-tauri && cargo check\")",
+      "Bash(cmd.exe /c \"cd /d c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\\\\src-tauri && cargo check 2>&1\")",
+      "Bash(powershell.exe -Command \"cd ''c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\\\\src-tauri''; cargo check 2>&1\")",
+      "Bash(powershell.exe:*)"
     ]
   }
 }

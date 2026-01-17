@@ -7,7 +7,15 @@ import { shell } from '@tauri-apps/api'
 import { fetch } from '@tauri-apps/api/http'
 import { AI_PROVIDERS, CATEGORY_INFO, type ProviderCategory, type ProviderDefinition } from './providers'
 
-const APP_VERSION = '1.1.0'
+// Crypto logos
+import btcLogo from './assets/crypto/btc.png'
+import ethLogo from './assets/crypto/eth.png'
+import solLogo from './assets/crypto/sol.png'
+import usdcLogo from './assets/crypto/usdc.png'
+import usdtLogo from './assets/crypto/usdt.png'
+import usd1Logo from './assets/crypto/usd1.svg'
+
+const APP_VERSION = '1.1.1'
 const GITHUB_REPO = 'PopeYeahWine/MeterAI'
 const GITHUB_USERNAME = 'PopeYeahWine'
 
@@ -103,6 +111,13 @@ function App() {
   const [showAbout, setShowAbout] = useState(false)
   const [updateAvailable, setUpdateAvailable] = useState<string | null>(null)
   const [lastUpdateCheck, setLastUpdateCheck] = useState<number>(0)
+  // Settings states
+  const [autostartEnabled, setAutostartEnabled] = useState(false)
+  const [configStatus, setConfigStatus] = useState<{
+    detected: boolean;
+    source: string;
+    customPath: string | null;
+  }>({ detected: false, source: 'none', customPath: null })
   // Collapsed state for categories - coding is open by default
   const [collapsedCategories, setCollapsedCategories] = useState<Record<ProviderCategory, boolean>>({
     coding: false, // Open by default
@@ -175,6 +190,21 @@ function App() {
           }
         } catch (e) {
           console.log('Claude Code integration not available:', e)
+        }
+
+        // Load autostart and config status
+        try {
+          const autostart = await invoke<boolean>('get_autostart_enabled')
+          setAutostartEnabled(autostart)
+        } catch (e) {
+          console.log('Autostart not available:', e)
+        }
+
+        try {
+          const status = await invoke<{ detected: boolean; source: string; customPath: string | null }>('get_config_detection_status')
+          setConfigStatus(status)
+        } catch (e) {
+          console.log('Config status not available:', e)
         }
 
         // Load usage for all providers
@@ -840,16 +870,6 @@ function App() {
             <p className="about-panel-version">
               Version {APP_VERSION}
             </p>
-            {updateAvailable && (
-              <div className="about-update-banner" onClick={() => openLink(`https://github.com/${GITHUB_REPO}/releases/latest`)}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                  <polyline points="7 10 12 15 17 10"></polyline>
-                  <line x1="12" y1="15" x2="12" y2="3"></line>
-                </svg>
-                New version available: v{updateAvailable}
-              </div>
-            )}
           </div>
           <button className="about-panel-close" onClick={() => setShowAbout(false)}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -863,44 +883,171 @@ function App() {
           Multi-provider AI usage tracker. Monitor your Claude, OpenAI, and other AI API usage in real-time.
         </div>
 
+        {/* Settings Section */}
+        <div className="about-panel-section">
+          <h3 className="about-section-title">Paramètres</h3>
+
+          {/* Autostart toggle */}
+          <div className="settings-row">
+            <span className="settings-label">Lancer au démarrage</span>
+            <label className="settings-toggle-mini">
+              <input
+                type="checkbox"
+                checked={autostartEnabled}
+                onChange={async (e) => {
+                  const enabled = e.target.checked
+                  try {
+                    await invoke('set_autostart_enabled', { enabled })
+                    setAutostartEnabled(enabled)
+                  } catch (err) {
+                    console.error('Failed to set autostart:', err)
+                  }
+                }}
+              />
+              <span className="settings-toggle-slider-mini"></span>
+            </label>
+          </div>
+
+          {/* Claude Config Status */}
+          <div className="settings-row config-status-row">
+            <span className="settings-label">Configuration Claude</span>
+            <span className={`config-status ${configStatus.detected ? 'detected' : 'not-detected'}`}>
+              {configStatus.detected ? 'Détectée' : 'Non trouvée'}
+            </span>
+          </div>
+
+          {configStatus.customPath && (
+            <div className="settings-row config-path-row">
+              <span className="config-path-text" title={configStatus.customPath}>
+                {configStatus.customPath.length > 40
+                  ? '...' + configStatus.customPath.slice(-37)
+                  : configStatus.customPath}
+              </span>
+              <button
+                className="config-clear-btn"
+                onClick={async () => {
+                  try {
+                    await invoke('set_custom_credentials_path', { path: null })
+                    const status = await invoke<{ detected: boolean; source: string; customPath: string | null }>('get_config_detection_status')
+                    setConfigStatus(status)
+                  } catch (err) {
+                    console.error('Failed to clear custom path:', err)
+                  }
+                }}
+                title="Supprimer le chemin personnalisé"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {!configStatus.detected && (
+            <div className="settings-help">
+              <p className="help-text">
+                Fichier non trouvé automatiquement. Chemins vérifiés :
+              </p>
+              <ul className="help-paths">
+                <li>~/.claude/.credentials.json</li>
+                <li>~/.claude/credentials.json</li>
+                <li>~/.config/claude-code/auth.json</li>
+              </ul>
+              <button
+                className="browse-config-btn"
+                onClick={async () => {
+                  try {
+                    const path = await invoke<string | null>('browse_credentials_file')
+                    if (path) {
+                      await invoke('set_custom_credentials_path', { path })
+                      const status = await invoke<{ detected: boolean; source: string; customPath: string | null }>('get_config_detection_status')
+                      setConfigStatus(status)
+                    }
+                  } catch (err) {
+                    console.error('Failed to browse for config:', err)
+                  }
+                }}
+              >
+                Parcourir...
+              </button>
+            </div>
+          )}
+        </div>
+
         <div className="about-panel-section">
           <h3 className="about-section-title">Contact</h3>
-          <button className="about-link" onClick={() => openLink(`https://github.com/${GITHUB_USERNAME}`)}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-            </svg>
-            Contact me on GitHub (@{GITHUB_USERNAME})
-          </button>
+          <div className="about-contact-row">
+            {/* GitHub Support */}
+            <button className="contact-card" onClick={() => openLink(`https://github.com/${GITHUB_REPO}/issues`)}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+              </svg>
+              <span className="contact-card-label">GitHub</span>
+            </button>
+
+            {/* Telegram Contact */}
+            <button className="contact-card telegram" onClick={() => openLink('https://t.me/PopeYeah')}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="#229ED9">
+                <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/>
+              </svg>
+              <span className="contact-card-label">@PopeYeah</span>
+            </button>
+          </div>
         </div>
 
         <div className="about-panel-section">
           <h3 className="about-section-title">Support Development</h3>
           <p className="about-donate-text">If you find this tool useful, consider supporting its development:</p>
 
+          {/* Bitcoin */}
           <div className="about-donate-item">
-            <span className="about-donate-label">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M23.638 14.904c-1.602 6.43-8.113 10.34-14.542 8.736C2.67 22.05-1.244 15.525.362 9.105 1.962 2.67 8.475-1.243 14.9.358c6.43 1.605 10.342 8.115 8.738 14.546z"/>
-              </svg>
-              BTC
-            </span>
+            <div className="about-donate-logos">
+              <img src={btcLogo} alt="BTC" className="crypto-logo crypto-logo-main" title="Bitcoin" />
+            </div>
             <code className="about-donate-address" onClick={() => navigator.clipboard.writeText('bc1qnav0zef8edpgtr0t7vkylyt0xly4vxzgwaerrt')}>
               bc1qnav0zef8edpgtr0t7vkylyt0xly4vxzgwaerrt
             </code>
           </div>
 
+          {/* Ethereum - USDC, USDT */}
           <div className="about-donate-item">
-            <span className="about-donate-label">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                <circle cx="12" cy="12" r="10"/>
-              </svg>
-              USDC (ETH)
-            </span>
+            <div className="about-donate-logos">
+              <img src={ethLogo} alt="ETH" className="crypto-logo crypto-logo-main" title="Ethereum" />
+              <img src={usdcLogo} alt="USDC" className="crypto-logo crypto-logo-token" title="USDC" />
+              <img src={usdtLogo} alt="USDT" className="crypto-logo crypto-logo-token" title="USDT" />
+              <img src={usd1Logo} alt="USD1" className="crypto-logo crypto-logo-token" title="USD1 (World Liberty Financial)" />
+            </div>
             <code className="about-donate-address" onClick={() => navigator.clipboard.writeText('0xaE42e321F2672A072b2e7421FF0E6Aa117cCd667')}>
               0xaE42e321F2672A072b2e7421FF0E6Aa117cCd667
             </code>
           </div>
+
+          {/* Solana - USDC, USDT */}
+          <div className="about-donate-item">
+            <div className="about-donate-logos">
+              <img src={solLogo} alt="SOL" className="crypto-logo crypto-logo-main" title="Solana" />
+              <img src={usdcLogo} alt="USDC" className="crypto-logo crypto-logo-token" title="USDC" />
+              <img src={usdtLogo} alt="USDT" className="crypto-logo crypto-logo-token" title="USDT" />
+              <img src={usd1Logo} alt="USD1" className="crypto-logo crypto-logo-token" title="USD1 (World Liberty Financial)" />
+            </div>
+            <code className="about-donate-address" onClick={() => navigator.clipboard.writeText('9MGSJXZwta7rWkL5MwpEbvwznXY6pU7uQqcoJoK2n39')}>
+              9MGSJXZwta7rWkL5MwpEbvwznXY6pU7uQqcoJoK2n39
+            </code>
+          </div>
         </div>
+
+        {/* Update Section */}
+        {updateAvailable && (
+          <div className="about-panel-section about-update-section">
+            <div className="about-update-banner" onClick={() => openLink(`https://github.com/${GITHUB_REPO}/releases/latest`)}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              <span>New version available: <strong>v{updateAvailable}</strong></span>
+              <span className="about-update-action">Download</span>
+            </div>
+          </div>
+        )}
 
         <div className="about-panel-section">
           <h3 className="about-section-title">License</h3>
@@ -917,16 +1064,6 @@ function App() {
             </svg>
             View on GitHub
           </button>
-          {updateAvailable && (
-            <button className="about-download-btn" onClick={() => openLink(`https://github.com/${GITHUB_REPO}/releases/latest`)}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="7 10 12 15 17 10"></polyline>
-                <line x1="12" y1="15" x2="12" y2="3"></line>
-              </svg>
-              Download v{updateAvailable}
-            </button>
-          )}
         </div>
       </div>
     )

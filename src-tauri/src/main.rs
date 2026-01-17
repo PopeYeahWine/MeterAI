@@ -17,6 +17,11 @@ use tauri::{
 };
 use thiserror::Error;
 
+#[cfg(target_os = "windows")]
+use winreg::enums::*;
+#[cfg(target_os = "windows")]
+use winreg::RegKey;
+
 // ============== ERROR HANDLING ==============
 
 #[derive(Error, Debug)]
@@ -42,18 +47,13 @@ impl Serialize for AppError {
 
 // ============== PROVIDER TYPES ==============
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderType {
+    #[default]
     Manual,
     Anthropic,
     OpenAI,
-}
-
-impl Default for ProviderType {
-    fn default() -> Self {
-        ProviderType::Manual
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,11 +117,19 @@ pub struct ProviderUsage {
     pub notified_thresholds: Vec<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AppSettings {
+    #[serde(rename = "customCredentialsPath")]
+    pub custom_credentials_path: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppState {
     pub providers: HashMap<String, ProviderUsage>,
     #[serde(rename = "activeProvider")]
     pub active_provider: String,
+    #[serde(default)]
+    pub settings: AppSettings,
 }
 
 impl Default for AppState {
@@ -204,6 +212,7 @@ impl Default for AppState {
         Self {
             providers,
             active_provider: "manual".to_string(),
+            settings: AppSettings::default(),
         }
     }
 }
@@ -333,56 +342,136 @@ fn extract_token_from_creds(creds: &ClaudeCodeCredentials) -> Option<String> {
     None
 }
 
+/// Try to read credentials from a specific path
+fn try_read_credentials(path: &PathBuf) -> Option<String> {
+    if !path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(path).ok()?;
+    let creds: ClaudeCodeCredentials = serde_json::from_str(&content).ok()?;
+    extract_token_from_creds(&creds)
+}
+
+/// Get all possible credential paths for the current OS
+fn get_credential_paths() -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+
+    if let Some(home) = dirs::home_dir() {
+        // Primary: ~/.claude/.credentials.json
+        paths.push(home.join(".claude").join(".credentials.json"));
+        // Legacy: ~/.claude/credentials.json
+        paths.push(home.join(".claude").join("credentials.json"));
+        // Alternative: ~/.config/claude-code/auth.json
+        paths.push(home.join(".config").join("claude-code").join("auth.json"));
+    }
+
+    // Windows-specific paths
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = env::var("APPDATA") {
+            // VS Code extension storage
+            paths.push(
+                PathBuf::from(&appdata)
+                    .join("Code")
+                    .join("User")
+                    .join("globalStorage")
+                    .join("anthropic.claude-code")
+                    .join("credentials.json"),
+            );
+        }
+        if let Ok(localappdata) = env::var("LOCALAPPDATA") {
+            paths.push(
+                PathBuf::from(&localappdata)
+                    .join("claude-code")
+                    .join("credentials.json"),
+            );
+        }
+    }
+
+    // Linux XDG paths
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(xdg_config) = env::var("XDG_CONFIG_HOME") {
+            paths.insert(
+                2,
+                PathBuf::from(&xdg_config)
+                    .join("claude-code")
+                    .join("auth.json"),
+            );
+        }
+    }
+
+    // macOS specific
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = dirs::home_dir() {
+            paths.push(
+                home.join("Library")
+                    .join("Application Support")
+                    .join("claude-code")
+                    .join("credentials.json"),
+            );
+        }
+    }
+
+    paths
+}
+
 /// Get Claude Code OAuth token from various sources
-fn get_claude_code_oauth_token() -> Option<String> {
-    // 1. Check environment variable first
+fn get_claude_code_oauth_token_with_custom(custom_path: Option<&str>) -> Option<String> {
+    // 1. Custom path (priority)
+    if let Some(path) = custom_path {
+        if let Some(token) = try_read_credentials(&PathBuf::from(path)) {
+            return Some(token);
+        }
+    }
+
+    // 2. Environment variable
     if let Ok(token) = env::var("CLAUDE_CODE_OAUTH_TOKEN") {
         if !token.is_empty() {
             return Some(token);
         }
     }
 
-    // 2. Check ~/.claude/.credentials.json (primary location for Claude Code)
-    if let Some(home) = dirs::home_dir() {
-        let credentials_path = home.join(".claude").join(".credentials.json");
-        if credentials_path.exists() {
-            if let Ok(content) = fs::read_to_string(&credentials_path) {
-                if let Ok(creds) = serde_json::from_str::<ClaudeCodeCredentials>(&content) {
-                    if let Some(token) = extract_token_from_creds(&creds) {
-                        return Some(token);
-                    }
-                }
-            }
-        }
-
-        // Also try credentials.json without the dot prefix
-        let credentials_path_alt = home.join(".claude").join("credentials.json");
-        if credentials_path_alt.exists() {
-            if let Ok(content) = fs::read_to_string(&credentials_path_alt) {
-                if let Ok(creds) = serde_json::from_str::<ClaudeCodeCredentials>(&content) {
-                    if let Some(token) = extract_token_from_creds(&creds) {
-                        return Some(token);
-                    }
-                }
-            }
-        }
-    }
-
-    // 3. Check ~/.config/claude-code/auth.json (alternative CLI location)
-    if let Some(home) = dirs::home_dir() {
-        let auth_path = home.join(".config").join("claude-code").join("auth.json");
-        if auth_path.exists() {
-            if let Ok(content) = fs::read_to_string(&auth_path) {
-                if let Ok(creds) = serde_json::from_str::<ClaudeCodeCredentials>(&content) {
-                    if let Some(token) = extract_token_from_creds(&creds) {
-                        return Some(token);
-                    }
-                }
-            }
+    // 3. Auto-detect paths
+    for path in get_credential_paths() {
+        if let Some(token) = try_read_credentials(&path) {
+            return Some(token);
         }
     }
 
     None
+}
+
+/// Get Claude Code OAuth token (legacy function for backward compatibility)
+fn get_claude_code_oauth_token() -> Option<String> {
+    get_claude_code_oauth_token_with_custom(None)
+}
+
+/// Get detected config source for UI display
+fn get_detected_config_source(custom_path: Option<&str>) -> String {
+    // 1. Custom path
+    if let Some(path) = custom_path {
+        if try_read_credentials(&PathBuf::from(path)).is_some() {
+            return format!("custom:{}", path);
+        }
+    }
+
+    // 2. Environment variable
+    if let Ok(token) = env::var("CLAUDE_CODE_OAUTH_TOKEN") {
+        if !token.is_empty() {
+            return "env:CLAUDE_CODE_OAUTH_TOKEN".to_string();
+        }
+    }
+
+    // 3. Auto-detect paths
+    for path in get_credential_paths() {
+        if try_read_credentials(&path).is_some() {
+            return format!("auto:{}", path.display());
+        }
+    }
+
+    "none".to_string()
 }
 
 /// Fetch usage from Claude Code OAuth API
@@ -517,6 +606,7 @@ fn set_active_provider(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn configure_provider(
     provider_id: String,
     api_key: Option<String>,
@@ -785,6 +875,119 @@ fn save_settings(
     window.emit("usage-updated", usage_data).ok();
 }
 
+// ============== AUTOSTART (Windows) ==============
+
+/// Check if autostart is enabled (Windows registry)
+#[tauri::command]
+fn get_autostart_enabled() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        if let Ok(run_key) =
+            hkcu.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Run")
+        {
+            return run_key.get_value::<String, _>("MeterAI").is_ok();
+        }
+    }
+    false
+}
+
+/// Set autostart enabled/disabled (Windows registry)
+#[tauri::command]
+fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let run_key = hkcu
+            .open_subkey_with_flags(
+                "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                KEY_SET_VALUE | KEY_QUERY_VALUE,
+            )
+            .map_err(|e| e.to_string())?;
+
+        if enabled {
+            let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+            run_key
+                .set_value("MeterAI", &exe_path.to_string_lossy().to_string())
+                .map_err(|e| e.to_string())?;
+        } else {
+            // Ignore error if value doesn't exist
+            run_key.delete_value("MeterAI").ok();
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // On non-Windows platforms, just ignore for now
+        let _ = enabled;
+    }
+
+    Ok(())
+}
+
+// ============== CONFIG DETECTION STATUS ==============
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigStatus {
+    pub detected: bool,
+    pub source: String,
+    #[serde(rename = "customPath")]
+    pub custom_path: Option<String>,
+}
+
+/// Get config detection status for UI display
+#[tauri::command]
+fn get_config_detection_status(state: tauri::State<Mutex<AppState>>) -> ConfigStatus {
+    let state = state.lock().unwrap();
+    let custom_path = state.settings.custom_credentials_path.as_deref();
+
+    ConfigStatus {
+        detected: get_claude_code_oauth_token_with_custom(custom_path).is_some(),
+        source: get_detected_config_source(custom_path),
+        custom_path: state.settings.custom_credentials_path.clone(),
+    }
+}
+
+/// Browse for credentials file using system dialog
+#[tauri::command]
+async fn browse_credentials_file() -> Result<Option<String>, String> {
+    use tauri::api::dialog::blocking::FileDialogBuilder;
+
+    let path = FileDialogBuilder::new()
+        .add_filter("JSON", &["json"])
+        .set_title("Sélectionner le fichier de credentials Claude")
+        .pick_file();
+
+    if let Some(path) = path {
+        // Validate file
+        let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let _: ClaudeCodeCredentials = serde_json::from_str(&content)
+            .map_err(|_| "Fichier invalide: format JSON incorrect ou champs manquants".to_string())?;
+
+        Ok(Some(path.to_string_lossy().to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Set custom credentials path
+#[tauri::command]
+fn set_custom_credentials_path(
+    path: Option<String>,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<(), String> {
+    let mut state = state.lock().unwrap();
+    state.settings.custom_credentials_path = path;
+    save_state(&state);
+    Ok(())
+}
+
+/// Get custom credentials path
+#[tauri::command]
+fn get_custom_credentials_path(state: tauri::State<Mutex<AppState>>) -> Option<String> {
+    state.lock().unwrap().settings.custom_credentials_path.clone()
+}
+
 // ============== SYSTEM TRAY ==============
 
 fn create_tray_menu() -> SystemTrayMenu {
@@ -873,14 +1076,19 @@ fn main() {
             get_settings,
             save_settings,
             get_claude_code_usage,
-            has_claude_code_token
+            has_claude_code_token,
+            get_autostart_enabled,
+            set_autostart_enabled,
+            get_config_detection_status,
+            browse_credentials_file,
+            set_custom_credentials_path,
+            get_custom_credentials_path
         ])
-        .on_window_event(|event| match event.event() {
-            tauri::WindowEvent::CloseRequested { api, .. } => {
+        .on_window_event(|event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event.event() {
                 event.window().hide().ok();
                 api.prevent_close();
             }
-            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
