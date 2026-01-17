@@ -224,10 +224,11 @@ fn load_state() -> AppState {
             if let Ok(mut state) = serde_json::from_str::<AppState>(&content) {
                 // Load API keys from secure storage
                 for (provider_id, provider) in state.providers.iter_mut() {
-                    let entry = keyring::Entry::new("meter-ai", provider_id);
-                    if let Ok(key) = entry.get_password() {
-                        provider.config.api_key = Some(key);
-                        provider.config.has_api_key = true;
+                    if let Ok(entry) = keyring::Entry::new("meter-ai", provider_id) {
+                        if let Ok(key) = entry.get_password() {
+                            provider.config.api_key = Some(key);
+                            provider.config.has_api_key = true;
+                        }
                     }
                 }
                 return state;
@@ -247,7 +248,8 @@ fn save_state(state: &AppState) {
 // ============== SECURE API KEY STORAGE ==============
 
 fn save_api_key(provider_id: &str, api_key: &str) -> Result<(), AppError> {
-    let entry = keyring::Entry::new("meter-ai", provider_id);
+    let entry = keyring::Entry::new("meter-ai", provider_id)
+        .map_err(|e| AppError::KeyringError(e.to_string()))?;
     entry
         .set_password(api_key)
         .map_err(|e| AppError::KeyringError(e.to_string()))?;
@@ -255,8 +257,9 @@ fn save_api_key(provider_id: &str, api_key: &str) -> Result<(), AppError> {
 }
 
 fn delete_api_key(provider_id: &str) -> Result<(), AppError> {
-    let entry = keyring::Entry::new("meter-ai", provider_id);
-    entry.delete_credential().ok();
+    if let Ok(entry) = keyring::Entry::new("meter-ai", provider_id) {
+        entry.delete_credential().ok();
+    }
     Ok(())
 }
 
