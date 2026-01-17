@@ -4,14 +4,44 @@ Multi-provider AI usage tracker - Monitor your Claude, OpenAI, and other AI API 
 
 ![Preview](docs/preview.png)
 
+---
+
+## License & Legal Notice
+
+**This software is proprietary and source-available (NOT open source).**
+
+The source code is made available solely for:
+- Transparency
+- Security auditing
+- Verification purposes
+
+### You may NOT:
+- Use this software for any purpose
+- Modify this software
+- Compile or build this software
+- Distribute this software in any form
+- Include this software or any portion of it in other projects
+- Use this software commercially or non-commercially
+- Create derivative works based on this software
+- Fork this repository for any purpose other than viewing
+
+**All rights reserved. Copyright (c) 2026 HPSC**
+
+For licensing inquiries, commercial use, or partnerships, please contact: [@PopeYeahWine](https://github.com/PopeYeahWine)
+
+See the [LICENSE](LICENSE) file for the full legal text.
+
+---
+
 ## Features
 
-- **Multi-Provider Support**: Track usage for Anthropic (Claude), OpenAI (ChatGPT), and manual tracking
+- **Multi-Provider Support**: Track usage for Anthropic (Claude), OpenAI (ChatGPT), and 30+ AI services
+- **Claude Code Integration**: Automatic OAuth-based usage tracking for Claude Pro/Max subscribers
 - **Always-on-Top Widget**: Floating, draggable, and unobtrusive
 - **Real-Time Monitoring**: Usage percentage, remaining requests, countdown to reset
+- **Auto-Update Check**: Daily GitHub release check with in-app notification
 - **Windows/macOS Notifications**: Configurable alerts at custom thresholds (70%, 90%, 100%)
 - **System Tray Integration**: Quick access from notification area
-- **History Tracking**: View past usage periods
 - **Secure API Key Storage**: Keys stored in OS credential manager (Windows Credential Manager / macOS Keychain)
 - **Cross-Platform**: Windows, macOS, and Linux support
 
@@ -34,29 +64,17 @@ Go to [Releases](https://github.com/PopeYeahWine/MeterAI/releases) and download:
 ### Quick Start
 
 1. Install and launch MeterAI
-2. Click the **lightning icon** to open Providers settings
-3. Configure your preferred provider(s):
-   - **Manual**: Count requests manually (no API key needed)
-   - **Anthropic (Claude)**: Enter your Anthropic API key
-   - **OpenAI (ChatGPT)**: Enter your OpenAI API key
-4. Click on a provider to select it as active
-5. Use **+1 Requete** / **+5** to track your usage
+2. Click the **chevron** to expand the provider list
+3. Claude Code users: Your usage is detected automatically via OAuth
+4. Other providers: Configure API keys in the settings
+5. Monitor your usage in real-time!
 
 ### System Tray
 
 Right-click the tray icon for quick actions:
-- **Afficher**: Show widget
-- **+1 / +5 Requetes**: Quick increment
-- **Reset quota**: Reset counter
-- **Quitter**: Exit application
-
-### Configuration
-
-For each provider, you can configure:
-- **API Key**: Your provider API key (stored securely)
-- **Limit per period**: Maximum requests (default: 100)
-- **Reset period**: Interval in hours (default: 4h)
-- **Alert thresholds**: Notification percentages (default: 70, 90, 100)
+- **Show**: Show widget
+- **Hide**: Hide widget
+- **Quit**: Exit application
 
 ### Data Storage
 
@@ -66,87 +84,6 @@ Your data is stored locally:
 - **Linux**: `~/.local/share/meter-ai/data.json`
 
 API keys are stored in the OS secure credential manager (never in plain text).
-
----
-
-## For Developers
-
-### Prerequisites
-
-- [Node.js](https://nodejs.org/) v18+
-- [Rust](https://rustup.rs/) (for compiling Tauri)
-- Platform-specific dependencies:
-  - **Windows**: Visual Studio Build Tools with C++ workload
-  - **macOS**: Xcode Command Line Tools
-  - **Linux**: `build-essential`, `libgtk-3-dev`, `libwebkit2gtk-4.0-dev`, `libssl-dev`
-
-### Setup
-
-```bash
-# Clone the repository
-git clone https://github.com/PopeYeahWine/MeterAI.git
-cd MeterAI
-
-# Install dependencies
-npm install
-
-# Run in development mode
-npm run tauri:dev
-```
-
-### Build for Production
-
-```bash
-# Build the application
-npm run tauri:build
-```
-
-Output locations:
-- **Windows**: `src-tauri/target/release/meter-ai.exe`
-- **macOS**: `src-tauri/target/release/bundle/dmg/`
-- **Linux**: `src-tauri/target/release/bundle/appimage/`
-
-### Project Structure
-
-```
-MeterAI/
-├── src/                    # Frontend (React + TypeScript)
-│   ├── App.tsx             # Main component
-│   ├── main.tsx            # Entry point
-│   └── styles.css          # Styles
-├── src-tauri/              # Backend (Rust + Tauri)
-│   ├── src/main.rs         # Main logic & providers
-│   ├── Cargo.toml          # Rust dependencies
-│   ├── tauri.conf.json     # Tauri configuration
-│   └── icons/              # App icons
-├── package.json
-└── README.md
-```
-
-### Adding a New Provider
-
-1. Add the provider type in `src-tauri/src/main.rs`:
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum ProviderType {
-    Manual,
-    Anthropic,
-    OpenAI,
-    NewProvider,  // Add here
-}
-```
-
-2. Initialize the provider in `AppState::default()`
-
-3. Update the frontend in `src/App.tsx`:
-   - Add icon and color in `getProviderIcon()` and `getProviderColor()`
-
-### Tech Stack
-
-- **Frontend**: React 18, TypeScript, Vite
-- **Backend**: Rust, Tauri 1.5
-- **Secure Storage**: `keyring` crate (OS credential manager)
-- **Notifications**: `notify-rust` crate
 
 ---
 
@@ -185,10 +122,30 @@ MeterAI works on:
 - Allow the application in privacy settings
 
 ### Missing tray icon
-- Ensure icon files exist in `src-tauri/icons/`
+- Ensure the application is running
+- Check system tray settings
 
 ---
 
-## License
+## Support & Contact
 
-MIT
+- **Issues & Bug Reports**: [GitHub Issues](https://github.com/PopeYeahWine/MeterAI/issues)
+- **Contact**: [@PopeYeahWine](https://github.com/PopeYeahWine)
+
+### Support Development
+
+If you find this tool useful:
+
+**BTC**: `bc1qnav0zef8edpgtr0t7vkylyt0xly4vxzgwaerrt`
+
+**USDC (ETH)**: `0xaE42e321F2672A072b2e7421FF0E6Aa117cCd667`
+
+---
+
+## Security
+
+For security vulnerabilities, please see [SECURITY.md](SECURITY.md).
+
+---
+
+**Copyright (c) 2026 HPSC - All Rights Reserved**

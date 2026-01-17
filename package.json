@@ -1,12 +1,12 @@
 {
   "name": "meter-ai",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Multi-provider AI usage tracker - Monitor your Claude, OpenAI, and other AI API usage",
   "repository": {
     "type": "git",
     "url": "https://github.com/PopeYeahWine/MeterAI"
   },
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -15,16 +15,18 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@tauri-apps/api": "^1.5.3",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "@tauri-apps/api": "^1.5.3"
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^1.5.11",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.2.1",
+    "png-to-ico": "^3.0.1",
+    "sharp": "^0.34.5",
     "typescript": "^5.3.3",
-    "vite": "^5.0.12"
+    "vite": "^6.4.1"
   }
 }

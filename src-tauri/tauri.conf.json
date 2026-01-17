@@ -7,7 +7,7 @@
   },
   "package": {
     "productName": "MeterAI",
-    "version": "1.0.0"
+    "version": "1.1.0"
   },
   "tauri": {
     "allowlist": {
@@ -21,12 +21,16 @@
       "notification": {
         "all": true
       },
+      "process": {
+        "all": true
+      },
       "http": {
-        "all": true,
+        "all": false,
         "request": true,
         "scope": [
           "https://api.anthropic.com/*",
-          "https://api.openai.com/*"
+          "https://api.openai.com/*",
+          "https://api.github.com/*"
         ]
       }
     },
@@ -64,7 +68,7 @@
       }
     },
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.anthropic.com https://api.openai.com https://api.github.com; img-src 'self' data:"
     },
     "systemTray": {
       "iconPath": "icons/icon.ico",
@@ -77,10 +81,10 @@
     "windows": [
       {
         "fullscreen": false,
-        "height": 400,
+        "height": 56,
         "resizable": false,
         "title": "MeterAI",
-        "width": 340,
+        "width": 520,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,

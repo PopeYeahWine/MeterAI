@@ -7,6 +7,7 @@ use chrono::{Local, Utc};
 use notify_rust::Notification;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -258,9 +259,161 @@ fn save_api_key(provider_id: &str, api_key: &str) -> Result<(), AppError> {
 
 fn delete_api_key(provider_id: &str) -> Result<(), AppError> {
     if let Ok(entry) = keyring::Entry::new("meter-ai", provider_id) {
-        entry.delete_credential().ok();
+        entry.delete_password().ok();
     }
     Ok(())
+}
+
+// ============== CLAUDE CODE OAUTH INTEGRATION ==============
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeOAuthData {
+    #[serde(rename = "accessToken")]
+    pub access_token: Option<String>,
+    #[serde(rename = "refreshToken")]
+    pub refresh_token: Option<String>,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: Option<i64>,
+    #[serde(rename = "subscriptionType")]
+    pub subscription_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeCodeCredentials {
+    // New nested format: { "claudeAiOauth": { "accessToken": "..." } }
+    #[serde(rename = "claudeAiOauth")]
+    pub claude_ai_oauth: Option<ClaudeOAuthData>,
+    // Legacy flat format: { "accessToken": "..." }
+    #[serde(rename = "accessToken")]
+    pub access_token: Option<String>,
+    #[serde(rename = "refreshToken")]
+    pub refresh_token: Option<String>,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeUsageWindow {
+    pub utilization: f64,
+    pub resets_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeUsageResponse {
+    pub five_hour: Option<ClaudeUsageWindow>,
+    pub seven_day: Option<ClaudeUsageWindow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeCodeUsageResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub five_hour_percent: Option<f64>,
+    pub five_hour_reset: Option<String>,
+    pub seven_day_percent: Option<f64>,
+    pub seven_day_reset: Option<String>,
+}
+
+/// Extract token from ClaudeCodeCredentials (handles both nested and flat format)
+fn extract_token_from_creds(creds: &ClaudeCodeCredentials) -> Option<String> {
+    // Try nested format first: { "claudeAiOauth": { "accessToken": "..." } }
+    if let Some(ref oauth) = creds.claude_ai_oauth {
+        if let Some(ref token) = oauth.access_token {
+            if !token.is_empty() {
+                return Some(token.clone());
+            }
+        }
+    }
+    // Fall back to flat format: { "accessToken": "..." }
+    if let Some(ref token) = creds.access_token {
+        if !token.is_empty() {
+            return Some(token.clone());
+        }
+    }
+    None
+}
+
+/// Get Claude Code OAuth token from various sources
+fn get_claude_code_oauth_token() -> Option<String> {
+    // 1. Check environment variable first
+    if let Ok(token) = env::var("CLAUDE_CODE_OAUTH_TOKEN") {
+        if !token.is_empty() {
+            return Some(token);
+        }
+    }
+
+    // 2. Check ~/.claude/.credentials.json (primary location for Claude Code)
+    if let Some(home) = dirs::home_dir() {
+        let credentials_path = home.join(".claude").join(".credentials.json");
+        if credentials_path.exists() {
+            if let Ok(content) = fs::read_to_string(&credentials_path) {
+                if let Ok(creds) = serde_json::from_str::<ClaudeCodeCredentials>(&content) {
+                    if let Some(token) = extract_token_from_creds(&creds) {
+                        return Some(token);
+                    }
+                }
+            }
+        }
+
+        // Also try credentials.json without the dot prefix
+        let credentials_path_alt = home.join(".claude").join("credentials.json");
+        if credentials_path_alt.exists() {
+            if let Ok(content) = fs::read_to_string(&credentials_path_alt) {
+                if let Ok(creds) = serde_json::from_str::<ClaudeCodeCredentials>(&content) {
+                    if let Some(token) = extract_token_from_creds(&creds) {
+                        return Some(token);
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Check ~/.config/claude-code/auth.json (alternative CLI location)
+    if let Some(home) = dirs::home_dir() {
+        let auth_path = home.join(".config").join("claude-code").join("auth.json");
+        if auth_path.exists() {
+            if let Ok(content) = fs::read_to_string(&auth_path) {
+                if let Ok(creds) = serde_json::from_str::<ClaudeCodeCredentials>(&content) {
+                    if let Some(token) = extract_token_from_creds(&creds) {
+                        return Some(token);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Fetch usage from Claude Code OAuth API
+async fn fetch_claude_code_usage(token: &str) -> Result<ClaudeUsageResponse, AppError> {
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get("https://api.anthropic.com/api/oauth/usage")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("User-Agent", "claude-code/2.0.32")
+        .header("Content-Type", "application/json")
+        .send()
+        .await
+        .map_err(|e| AppError::NetworkError(e.to_string()))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::ApiError(format!(
+            "API returned {}: {}",
+            status, body
+        )));
+    }
+
+    let usage: ClaudeUsageResponse = response
+        .json()
+        .await
+        .map_err(|e| AppError::ApiError(format!("Failed to parse response: {}", e)))?;
+
+    Ok(usage)
 }
 
 // ============== NOTIFICATIONS ==============
@@ -376,11 +529,24 @@ fn configure_provider(
 ) -> Result<(), AppError> {
     let mut state = state.lock().unwrap();
 
-    if let Some(provider) = state.providers.get_mut(&provider_id) {
-        // Save API key securely if provided
+    if !state.providers.contains_key(&provider_id) {
+        return Err(AppError::ConfigError("Provider not found".to_string()));
+    }
+
+    // Save API key securely if provided
+    if let Some(key) = &api_key {
+        if !key.is_empty() {
+            save_api_key(&provider_id, key)?;
+        }
+    }
+
+    let should_emit = state.active_provider == provider_id;
+    let usage_data;
+
+    {
+        let provider = state.providers.get_mut(&provider_id).unwrap();
         if let Some(key) = &api_key {
             if !key.is_empty() {
-                save_api_key(&provider_id, key)?;
                 provider.config.api_key = Some(key.clone());
                 provider.config.has_api_key = true;
             }
@@ -393,17 +559,16 @@ fn configure_provider(
         provider.usage.limit = limit;
         provider.usage.percent =
             ((provider.usage.used as f64 / provider.usage.limit as f64) * 100.0) as u32;
-
-        save_state(&state);
-
-        if state.active_provider == provider_id {
-            window.emit("usage-updated", provider.usage.clone()).ok();
-        }
-
-        Ok(())
-    } else {
-        Err(AppError::ConfigError("Provider not found".to_string()))
+        usage_data = provider.usage.clone();
     }
+
+    save_state(&state);
+
+    if should_emit {
+        window.emit("usage-updated", usage_data).ok();
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -429,7 +594,13 @@ fn add_request(count: u32, state: tauri::State<Mutex<AppState>>, window: Window)
     let mut state = state.lock().unwrap();
     let active = state.active_provider.clone();
 
-    if let Some(provider) = state.providers.get_mut(&active) {
+    if !state.providers.contains_key(&active) {
+        return;
+    }
+
+    let usage_data = {
+        let provider = state.providers.get_mut(&active).unwrap();
+
         // Check if reset needed
         let now = Utc::now().timestamp();
         if now >= provider.usage.reset_time {
@@ -470,10 +641,12 @@ fn add_request(count: u32, state: tauri::State<Mutex<AppState>>, window: Window)
         // Check notifications
         check_and_notify(provider);
 
-        // Save and emit
-        save_state(&state);
-        window.emit("usage-updated", provider.usage.clone()).ok();
-    }
+        provider.usage.clone()
+    };
+
+    // Save and emit (outside the borrow scope)
+    save_state(&state);
+    window.emit("usage-updated", usage_data).ok();
 }
 
 #[tauri::command]
@@ -481,7 +654,13 @@ fn reset_usage(state: tauri::State<Mutex<AppState>>, window: Window) {
     let mut state = state.lock().unwrap();
     let active = state.active_provider.clone();
 
-    if let Some(provider) = state.providers.get_mut(&active) {
+    if !state.providers.contains_key(&active) {
+        return;
+    }
+
+    let usage_data = {
+        let provider = state.providers.get_mut(&active).unwrap();
+
         // Save to history
         let time_str = Local::now().format("%H:%M").to_string();
         provider.usage.history.insert(
@@ -503,9 +682,11 @@ fn reset_usage(state: tauri::State<Mutex<AppState>>, window: Window) {
             Utc::now().timestamp() + (provider.config.reset_interval_hours as i64 * 3600);
         provider.notified_thresholds.clear();
 
-        save_state(&state);
-        window.emit("usage-updated", provider.usage.clone()).ok();
-    }
+        provider.usage.clone()
+    };
+
+    save_state(&state);
+    window.emit("usage-updated", usage_data).ok();
 }
 
 // Legacy command for backward compatibility
@@ -524,6 +705,56 @@ fn get_settings(state: tauri::State<Mutex<AppState>>) -> ProviderConfig {
         .unwrap_or_default()
 }
 
+/// Get Claude Code usage from OAuth API (for Pro/Max plans)
+#[tauri::command]
+async fn get_claude_code_usage() -> ClaudeCodeUsageResult {
+    // Try to get OAuth token
+    let token = match get_claude_code_oauth_token() {
+        Some(t) => t,
+        None => {
+            return ClaudeCodeUsageResult {
+                success: false,
+                error: Some("Token OAuth Claude Code non trouvé. Vérifiez que Claude Code est connecté.".to_string()),
+                five_hour_percent: None,
+                five_hour_reset: None,
+                seven_day_percent: None,
+                seven_day_reset: None,
+            };
+        }
+    };
+
+    // Fetch usage from API
+    match fetch_claude_code_usage(&token).await {
+        Ok(usage) => {
+            // API returns utilization already as percentage (0-100), no need to multiply
+            ClaudeCodeUsageResult {
+                success: true,
+                error: None,
+                five_hour_percent: usage.five_hour.as_ref().map(|w| w.utilization),
+                five_hour_reset: usage.five_hour.and_then(|w| w.resets_at),
+                seven_day_percent: usage.seven_day.as_ref().map(|w| w.utilization),
+                seven_day_reset: usage.seven_day.and_then(|w| w.resets_at),
+            }
+        }
+        Err(e) => {
+            ClaudeCodeUsageResult {
+                success: false,
+                error: Some(e.to_string()),
+                five_hour_percent: None,
+                five_hour_reset: None,
+                seven_day_percent: None,
+                seven_day_reset: None,
+            }
+        }
+    }
+}
+
+/// Check if Claude Code OAuth token is available
+#[tauri::command]
+fn has_claude_code_token() -> bool {
+    get_claude_code_oauth_token().is_some()
+}
+
 #[tauri::command]
 fn save_settings(
     limit: u32,
@@ -535,17 +766,23 @@ fn save_settings(
     let mut state = state.lock().unwrap();
     let active = state.active_provider.clone();
 
-    if let Some(provider) = state.providers.get_mut(&active) {
+    if !state.providers.contains_key(&active) {
+        return;
+    }
+
+    let usage_data = {
+        let provider = state.providers.get_mut(&active).unwrap();
         provider.config.limit = limit;
         provider.config.alert_thresholds = alert_thresholds;
         provider.config.reset_interval_hours = reset_interval_hours;
         provider.usage.limit = limit;
         provider.usage.percent =
             ((provider.usage.used as f64 / provider.usage.limit as f64) * 100.0) as u32;
+        provider.usage.clone()
+    };
 
-        save_state(&state);
-        window.emit("usage-updated", provider.usage.clone()).ok();
-    }
+    save_state(&state);
+    window.emit("usage-updated", usage_data).ok();
 }
 
 // ============== SYSTEM TRAY ==============
@@ -634,7 +871,9 @@ fn main() {
             add_request,
             reset_usage,
             get_settings,
-            save_settings
+            save_settings,
+            get_claude_code_usage,
+            has_claude_code_token
         ])
         .on_window_event(|event| match event.event() {
             tauri::WindowEvent::CloseRequested { api, .. } => {

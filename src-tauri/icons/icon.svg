@@ -1,12 +1,52 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="256" height="256" fill="none">
   <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#d97706"/>
-      <stop offset="100%" style="stop-color:#b45309"/>
+    <!-- Brand gradients -->
+    <linearGradient id="gStroke" x1="18" y1="28" x2="110" y2="100" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#22F0B6"/>
     </linearGradient>
+
+    <linearGradient id="gFill" x1="26" y1="50" x2="92" y2="78" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22F0B6" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#38BDF8" stop-opacity="0.95"/>
+    </linearGradient>
+
+    <!-- Soft glow for the charge bars -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3.2" result="b"/>
+      <feColorMatrix in="b" type="matrix"
+        values="1 0 0 0 0
+                0 1 0 0 0
+                0 0 1 0 0
+                0 0 0 0.55 0" result="g"/>
+      <feMerge>
+        <feMergeNode in="g"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
   </defs>
-  <rect width="128" height="128" rx="24" fill="url(#bg)"/>
-  <text x="64" y="85" font-family="Segoe UI, Arial, sans-serif" font-size="72" font-weight="bold" fill="white" text-anchor="middle">C</text>
-  <circle cx="100" cy="28" r="16" fill="#22c55e"/>
-  <text x="100" y="34" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="bold" fill="white" text-anchor="middle">%</text>
+
+  <!-- Battery shell -->
+  <rect x="16" y="34" width="88" height="60" rx="18" fill="#0B1020" opacity="0.92"/>
+  <rect x="16" y="34" width="88" height="60" rx="18" stroke="url(#gStroke)" stroke-width="3.5"/>
+
+  <!-- Battery cap -->
+  <rect x="106" y="52" width="10" height="24" rx="5" fill="url(#gStroke)" opacity="0.95"/>
+
+  <!-- Inner cavity (subtle) -->
+  <rect x="26" y="46" width="70" height="36" rx="12" fill="#121A32" opacity="0.85"/>
+
+  <!-- Charge bars (edit "active" count by changing opacity) -->
+  <g filter="url(#glow)">
+    <!-- bar 1 -->
+    <rect x="30" y="50" width="10" height="28" rx="5" fill="url(#gFill)" opacity="0.95"/>
+    <!-- bar 2 -->
+    <rect x="44" y="50" width="10" height="28" rx="5" fill="url(#gFill)" opacity="0.95"/>
+    <!-- bar 3 -->
+    <rect x="58" y="50" width="10" height="28" rx="5" fill="url(#gFill)" opacity="0.95"/>
+    <!-- bar 4 -->
+    <rect x="72" y="50" width="10" height="28" rx="5" fill="url(#gFill)" opacity="0.45"/>
+    <!-- bar 5 -->
+    <rect x="86" y="50" width="10" height="28" rx="5" fill="url(#gFill)" opacity="0.20"/>
+  </g>
 </svg>

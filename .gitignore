@@ -15,6 +15,13 @@ src-tauri/target/
 .DS_Store
 Thumbs.db
 
+# Windows reserved names (cannot be tracked by git)
+nul
+NUL
+
+# Visual Studio
+.vs/
+
 # Logs
 *.log
 npm-debug.log*
