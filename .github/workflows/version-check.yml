@@ -1,0 +1,65 @@
+name: Version Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version consistency
+        run: |
+          # Extract versions from all files
+          PKG_VERSION=$(jq -r '.version' package.json)
+          TAURI_VERSION=$(jq -r '.package.version' src-tauri/tauri.conf.json)
+          CARGO_VERSION=$(grep '^version = ' src-tauri/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+
+          echo "📦 Versions found:"
+          echo "  package.json:     $PKG_VERSION"
+          echo "  tauri.conf.json:  $TAURI_VERSION"
+          echo "  Cargo.toml:       $CARGO_VERSION"
+
+          # Check if all versions match
+          if [ "$PKG_VERSION" != "$TAURI_VERSION" ] || [ "$PKG_VERSION" != "$CARGO_VERSION" ]; then
+            echo ""
+            echo "❌ ERROR: Version mismatch detected!"
+            echo ""
+            echo "All version numbers must be identical across:"
+            echo "  - package.json"
+            echo "  - src-tauri/tauri.conf.json"
+            echo "  - src-tauri/Cargo.toml"
+            echo ""
+            echo "Run: node scripts/bump-version.js $PKG_VERSION"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All versions match: $PKG_VERSION"
+
+      - name: Check tag matches version (on tag push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          PKG_VERSION=$(jq -r '.version' package.json)
+
+          echo "🏷️  Tag version:     $TAG_VERSION"
+          echo "📦 Package version: $PKG_VERSION"
+
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo ""
+            echo "❌ ERROR: Tag version doesn't match package version!"
+            echo ""
+            echo "Tag: v$TAG_VERSION"
+            echo "Code: $PKG_VERSION"
+            echo ""
+            echo "Make sure to bump the version before creating the tag."
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ Tag matches code version"
