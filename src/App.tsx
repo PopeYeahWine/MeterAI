@@ -158,6 +158,7 @@ interface ProviderSettingsPanelProps {
   configStatus: { detected: boolean; source: string; customPath: string | null }
   setConfigStatus: React.Dispatch<React.SetStateAction<{ detected: boolean; source: string; customPath: string | null }>>
   setHasClaudeCodeToken: React.Dispatch<React.SetStateAction<boolean>>
+  setEnabledProviders: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
   refreshClaudeCodeUsage: () => Promise<void>
 }
 
@@ -171,6 +172,7 @@ const ProviderSettingsPanel = ({
   configStatus,
   setConfigStatus,
   setHasClaudeCodeToken,
+  setEnabledProviders,
   refreshClaudeCodeUsage
 }: ProviderSettingsPanelProps) => {
   // Local accordion states - stable because component is not recreated
@@ -233,7 +235,8 @@ const ProviderSettingsPanel = ({
     }
   }
 
-  const handleResetThresholds = () => {
+  const handleResetConfig = async () => {
+    // Reset thresholds to defaults
     setProviderThresholds(prev => ({
       ...prev,
       [providerId]: { green: 70, yellow: 85, orange: 95, red: 100 }
@@ -242,6 +245,25 @@ const ProviderSettingsPanel = ({
       ...prev,
       [providerId]: { red: 20, orange: 40, yellow: 70, blue: 100 }
     }))
+
+    // Clear custom credentials path and reset detection state
+    try {
+      await invoke('set_custom_credentials_path', { path: null })
+
+      // Clear the "dismissed" flag so detection popup can show again on next startup
+      localStorage.removeItem('claudeDetectedDismissed')
+
+      // Disable this provider in UI state (will also persist via useEffect)
+      setEnabledProviders(prev => ({ ...prev, [providerId]: false }))
+
+      // Reset token state to false (full reset)
+      setHasClaudeCodeToken(false)
+
+      // Update config status to reflect no credential
+      setConfigStatus({ detected: false, source: 'none', customPath: null })
+    } catch (e) {
+      console.error('Failed to reset config:', e)
+    }
   }
 
   // Format path with middle ellipsis, keeping end visible (filename)
@@ -510,12 +532,12 @@ const ProviderSettingsPanel = ({
               Browse...
             </button>
           </div>
-          <button className="provider-settings-btn-action danger" onClick={handleResetThresholds}>
+          <button className="provider-settings-btn-action danger" onClick={handleResetConfig}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M3 6h18"></path>
               <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
             </svg>
-            Reset Defaults
+            Reset config
           </button>
         </div>
       </div>
@@ -579,12 +601,19 @@ function App() {
 
   // Track enabled state for all AI providers (from providers.ts)
   const [enabledProviders, setEnabledProviders] = useState<Record<string, boolean>>(() => {
-    // Only enable Claude Pro/Max by default (the only fully supported provider)
-    // All "Coming soon" providers must be disabled
+    // Try to load from localStorage first
+    const stored = localStorage.getItem('enabledProviders')
+    if (stored) {
+      try {
+        return JSON.parse(stored)
+      } catch (e) {
+        // Invalid JSON, use defaults
+      }
+    }
+    // Default: all providers disabled, user must enable via detection popup or manually
     const initial: Record<string, boolean> = {}
     AI_PROVIDERS.forEach(p => {
-      // Only Claude Pro/Max is enabled by default
-      initial[p.id] = p.id === 'claude-pro-max'
+      initial[p.id] = false
     })
     return initial
   })
@@ -597,6 +626,11 @@ function App() {
     resetIntervalHours: 4,
     enabled: true
   })
+
+  // Persist enabledProviders to localStorage when it changes
+  useEffect(() => {
+    localStorage.setItem('enabledProviders', JSON.stringify(enabledProviders))
+  }, [enabledProviders])
 
   // Load data on startup
   useEffect(() => {
@@ -1582,52 +1616,17 @@ function App() {
     setShowAbout(true)
   }, [viewMode])
 
-  // Claude Code Detection Popup
-  const ClaudeDetectedPopup = () => {
-    if (!showClaudeDetectedPopup) return null
+  // Claude Code Detection Popup handlers
+  const handleClaudeDetectedEnable = useCallback(() => {
+    setEnabledProviders(prev => ({ ...prev, 'claude-pro-max': true }))
+    setShowClaudeDetectedPopup(false)
+    localStorage.setItem('claudeDetectedDismissed', 'true')
+  }, [])
 
-    const handleEnable = () => {
-      setEnabledProviders(prev => ({ ...prev, 'claude-pro-max': true }))
-      setShowClaudeDetectedPopup(false)
-      localStorage.setItem('claudeDetectedDismissed', 'true')
-    }
-
-    const handleDismiss = () => {
-      setShowClaudeDetectedPopup(false)
-      localStorage.setItem('claudeDetectedDismissed', 'true')
-    }
-
-    return (
-      <div className="popup-overlay">
-        <div className="popup-container">
-          <div className="popup-icon">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="url(#popupGrad)" strokeWidth="2">
-              <defs>
-                <linearGradient id="popupGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stopColor="#2563EB"/>
-                  <stop offset="100%" stopColor="#22F0B6"/>
-                </linearGradient>
-              </defs>
-              <path d="M9 12l2 2 4-4"></path>
-              <circle cx="12" cy="12" r="10"></circle>
-            </svg>
-          </div>
-          <h3 className="popup-title">Claude Code Detected</h3>
-          <p className="popup-message">
-            We found your Claude Code credentials. Enable automatic usage tracking?
-          </p>
-          <div className="popup-actions">
-            <button className="popup-btn primary" onClick={handleEnable}>
-              Enable
-            </button>
-            <button className="popup-btn secondary" onClick={handleDismiss}>
-              Not Now
-            </button>
-          </div>
-        </div>
-      </div>
-    )
-  }
+  const handleClaudeDetectedDismiss = useCallback(() => {
+    setShowClaudeDetectedPopup(false)
+    localStorage.setItem('claudeDetectedDismissed', 'true')
+  }, [])
 
   // Compact banner mode
   if (viewMode === 'compact') {
@@ -1975,7 +1974,36 @@ function App() {
     return (
       <div className="expanded-container">
         {/* Popup for Claude Code detection */}
-        <ClaudeDetectedPopup />
+        {showClaudeDetectedPopup && (
+          <div className="popup-overlay">
+            <div className="popup-container">
+              <div className="popup-icon">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="url(#popupGrad)" strokeWidth="2">
+                  <defs>
+                    <linearGradient id="popupGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor="#2563EB"/>
+                      <stop offset="100%" stopColor="#22F0B6"/>
+                    </linearGradient>
+                  </defs>
+                  <path d="M9 12l2 2 4-4"></path>
+                  <circle cx="12" cy="12" r="10"></circle>
+                </svg>
+              </div>
+              <h3 className="popup-title">Claude Code Detected</h3>
+              <p className="popup-message">
+                We found your Claude Code credentials. Enable automatic usage tracking?
+              </p>
+              <div className="popup-actions">
+                <button className="popup-btn primary" onClick={handleClaudeDetectedEnable}>
+                  Enable
+                </button>
+                <button className="popup-btn secondary" onClick={handleClaudeDetectedDismiss}>
+                  Not Now
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {/* Provider settings panel */}
         <ProviderSettingsPanel
           providerId={providerSettingsOpen}
@@ -1987,6 +2015,7 @@ function App() {
           configStatus={configStatus}
           setConfigStatus={setConfigStatus}
           setHasClaudeCodeToken={setHasClaudeCodeToken}
+          setEnabledProviders={setEnabledProviders}
           refreshClaudeCodeUsage={refreshClaudeCodeUsage}
         />
 
@@ -2316,7 +2345,7 @@ function App() {
                       <div
                         key={providerId}
                         className={`provider-card-mini ${!isEnabled ? 'disabled' : ''} ${isConfigured ? 'configured' : ''} ${isComingSoon ? 'coming-soon' : ''}`}
-                        onClick={() => isEnabled && !isComingSoon && openProviderConfig(providerId)}
+                        onClick={() => !isComingSoon && setProviderSettingsOpen(providerId)}
                       >
                         <label
                           className={`expanded-toggle-mini provider-card-mini-toggle ${isComingSoon ? 'disabled' : ''} ${!isComingSoon && !isEnabled ? 'activable' : ''}`}
@@ -2347,8 +2376,14 @@ function App() {
                             <span className="version-badge coming-soon">Coming soon</span>
                           ) : isEnabled && isConfigured ? (
                             <span className="provider-card-mini-percent">{displayPercent}%</span>
-                          ) : isEnabled && !isConfigured ? (
-                            <span className="version-badge api">Configure</span>
+                          ) : !isConfigured ? (
+                            <span className="version-badge setup">
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <circle cx="12" cy="12" r="3"></circle>
+                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                              </svg>
+                              Setup
+                            </span>
                           ) : (
                             <span className="version-badge free">Off</span>
                           )}

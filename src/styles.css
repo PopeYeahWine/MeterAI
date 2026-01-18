@@ -33,6 +33,7 @@ body {
 }
 
 .widget-container {
+  position: relative;
   background: var(--bg-primary);
   border-radius: 12px;
   border: 1px solid var(--border-color);
@@ -710,6 +711,7 @@ body {
    ======================================== */
 
 .expanded-container {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -2146,6 +2148,22 @@ body {
   color: #fb923c;
 }
 
+.version-badge.setup {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(249, 115, 22, 0.25);
+  color: #f97316;
+  border: 1px solid rgba(249, 115, 22, 0.4);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.version-badge.setup:hover {
+  background: rgba(249, 115, 22, 0.35);
+  border-color: rgba(249, 115, 22, 0.6);
+}
+
 .version-badge.coming-soon {
   background: rgba(100, 116, 139, 0.2);
   color: #94a3b8;
@@ -2307,7 +2325,7 @@ body {
    ======================================== */
 
 .popup-overlay {
-  position: fixed;
+  position: absolute;
   top: 0;
   left: 0;
   right: 0;
@@ -2318,6 +2336,8 @@ body {
   justify-content: center;
   z-index: 1000;
   animation: fadeIn 0.2s ease-out;
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 @keyframes fadeIn {
@@ -3041,7 +3061,7 @@ body {
 
 /* Provider Settings Panel Overlay */
 .provider-settings-overlay {
-  position: fixed;
+  position: absolute;
   top: 0;
   left: 0;
   right: 0;
@@ -3052,6 +3072,8 @@ body {
   justify-content: center;
   z-index: 1000;
   animation: fadeIn 0.2s ease-out;
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 .provider-settings-panel {
