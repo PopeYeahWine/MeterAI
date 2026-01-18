@@ -280,32 +280,64 @@ function App() {
     return () => clearInterval(interval)
   }, [usage.resetTime])
 
+  // Refresh Claude Code usage function - can be called manually or by interval
+  const refreshClaudeCodeUsage = useCallback(async () => {
+    try {
+      // First check if token is still available
+      const hasToken = await invoke<boolean>('has_claude_code_token')
+      setHasClaudeCodeToken(hasToken)
+
+      if (!hasToken) {
+        console.log('MeterAI: No Claude Code token available')
+        return
+      }
+
+      console.log('MeterAI: Refreshing Claude Code usage...')
+      const ccUsage = await invoke<ClaudeCodeUsageResult>('get_claude_code_usage')
+      setClaudeCodeUsage(ccUsage)
+
+      if (ccUsage.success) {
+        const percent = ccUsage.five_hour_percent ?? 0
+        console.log(`MeterAI: Usage updated - 5h: ${percent}%, reset: ${ccUsage.five_hour_reset}`)
+        setProvidersUsage(prev => ({
+          ...prev,
+          'claude-pro-max': {
+            used: Math.round(percent),
+            limit: 100,
+            percent: Math.round(percent)
+          }
+        }))
+      } else {
+        console.log('MeterAI: Usage fetch returned success=false')
+      }
+    } catch (e) {
+      console.log('MeterAI: Failed to refresh usage:', e)
+    }
+  }, [])
+
   // Auto-refresh Claude Code usage every 2 minutes
   useEffect(() => {
-    if (!hasClaudeCodeToken) return
+    // Don't start polling if we don't have a token yet
+    // But check periodically anyway in case token becomes available
+    const POLL_INTERVAL = 2 * 60 * 1000 // 2 minutes
 
-    const refreshInterval = setInterval(async () => {
-      try {
-        const ccUsage = await invoke<ClaudeCodeUsageResult>('get_claude_code_usage')
-        setClaudeCodeUsage(ccUsage)
+    // Immediate refresh on mount (after a short delay to let initial load complete)
+    const initialRefresh = setTimeout(() => {
+      console.log('MeterAI: Starting periodic usage refresh (every 2 minutes)')
+      refreshClaudeCodeUsage()
+    }, 5000) // 5 second delay after mount
 
-        if (ccUsage.success && ccUsage.five_hour_percent !== null) {
-          setProvidersUsage(prev => ({
-            ...prev,
-            'claude-pro-max': {
-              used: Math.round(ccUsage.five_hour_percent || 0),
-              limit: 100,
-              percent: Math.round(ccUsage.five_hour_percent || 0)
-            }
-          }))
-        }
-      } catch (e) {
-        console.log('Auto-refresh failed:', e)
-      }
-    }, 2 * 60 * 1000) // 2 minutes
+    // Set up polling interval
+    const refreshInterval = setInterval(() => {
+      console.log('MeterAI: Periodic refresh triggered')
+      refreshClaudeCodeUsage()
+    }, POLL_INTERVAL)
 
-    return () => clearInterval(refreshInterval)
-  }, [hasClaudeCodeToken])
+    return () => {
+      clearTimeout(initialRefresh)
+      clearInterval(refreshInterval)
+    }
+  }, [refreshClaudeCodeUsage])
 
   const addRequest = useCallback(async (count: number = 1) => {
     try {
@@ -332,7 +364,7 @@ function App() {
         percent: 0,
         resetTime: Date.now() / 1000 + 4 * 3600,
         history: [
-          { time: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }), used: prev.used, limit: prev.limit },
+          { time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }), used: prev.used, limit: prev.limit },
           ...prev.history.slice(0, 5)
         ]
       }))
@@ -405,27 +437,6 @@ function App() {
     }
   }, [])
 
-  const refreshClaudeCodeUsage = useCallback(async () => {
-    try {
-      const ccUsage = await invoke<ClaudeCodeUsageResult>('get_claude_code_usage')
-      setClaudeCodeUsage(ccUsage)
-
-      if (ccUsage.success && ccUsage.five_hour_percent !== null) {
-        setProvidersUsage(prev => ({
-          ...prev,
-          anthropic: {
-            used: Math.round(ccUsage.five_hour_percent || 0),
-            limit: 100,
-            percent: Math.round(ccUsage.five_hour_percent || 0)
-          }
-        }))
-      }
-      return ccUsage
-    } catch (e) {
-      console.error('Failed to refresh Claude Code usage:', e)
-      return null
-    }
-  }, [])
 
   const toggleProviderEnabled = useCallback(async (providerId: string, enabled: boolean) => {
     try {
@@ -906,11 +917,11 @@ function App() {
 
         {/* Settings Section */}
         <div className="about-panel-section">
-          <h3 className="about-section-title">Paramètres</h3>
+          <h3 className="about-section-title">Settings</h3>
 
           {/* Autostart toggle */}
           <div className="settings-row">
-            <span className="settings-label">Lancer au démarrage</span>
+            <span className="settings-label">Launch at startup</span>
             <label className="settings-toggle-mini">
               <input
                 type="checkbox"
@@ -931,9 +942,9 @@ function App() {
 
           {/* Claude Config Status */}
           <div className="settings-row config-status-row">
-            <span className="settings-label">Configuration Claude</span>
+            <span className="settings-label">Claude Configuration</span>
             <span className={`config-status ${configStatus.detected ? 'detected' : 'not-detected'}`}>
-              {configStatus.detected ? 'Détectée' : 'Non trouvée'}
+              {configStatus.detected ? 'Detected' : 'Not found'}
             </span>
           </div>
 
@@ -955,7 +966,7 @@ function App() {
                     console.error('Failed to clear custom path:', err)
                   }
                 }}
-                title="Supprimer le chemin personnalisé"
+                title="Remove custom path"
               >
                 ✕
               </button>
@@ -965,7 +976,7 @@ function App() {
           {!configStatus.detected && (
             <div className="settings-help">
               <p className="help-text">
-                Fichier non trouvé automatiquement. Chemins vérifiés :
+                File not found automatically. Paths checked:
               </p>
               <ul className="help-paths">
                 <li>~/.claude/.credentials.json</li>
@@ -987,7 +998,7 @@ function App() {
                   }
                 }}
               >
-                Parcourir...
+                Browse...
               </button>
             </div>
           )}

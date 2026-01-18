@@ -955,14 +955,14 @@ async fn browse_credentials_file() -> Result<Option<String>, String> {
 
     let path = FileDialogBuilder::new()
         .add_filter("JSON", &["json"])
-        .set_title("Sélectionner le fichier de credentials Claude")
+        .set_title("Select Claude credentials file")
         .pick_file();
 
     if let Some(path) = path {
         // Validate file
         let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let _: ClaudeCodeCredentials = serde_json::from_str(&content)
-            .map_err(|_| "Fichier invalide: format JSON incorrect ou champs manquants".to_string())?;
+            .map_err(|_| "Invalid file: incorrect JSON format or missing fields".to_string())?;
 
         Ok(Some(path.to_string_lossy().to_string()))
     } else {
@@ -991,11 +991,11 @@ fn get_custom_credentials_path(state: tauri::State<Mutex<AppState>>) -> Option<S
 // ============== SYSTEM TRAY ==============
 
 fn create_tray_menu() -> SystemTrayMenu {
-    let show = CustomMenuItem::new("show".to_string(), "Afficher");
-    let add_one = CustomMenuItem::new("add_one".to_string(), "+1 Requête");
-    let add_five = CustomMenuItem::new("add_five".to_string(), "+5 Requêtes");
+    let show = CustomMenuItem::new("show".to_string(), "Show");
+    let add_one = CustomMenuItem::new("add_one".to_string(), "+1 Request");
+    let add_five = CustomMenuItem::new("add_five".to_string(), "+5 Requests");
     let reset = CustomMenuItem::new("reset".to_string(), "Reset quota");
-    let quit = CustomMenuItem::new("quit".to_string(), "Quitter");
+    let quit = CustomMenuItem::new("quit".to_string(), "Quit");
 
     SystemTrayMenu::new()
         .add_item(show)
