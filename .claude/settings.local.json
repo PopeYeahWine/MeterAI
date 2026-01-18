@@ -78,7 +78,8 @@
       "Bash(move \"Capture d''écran 2026-01-18 122642.png\" \"assets\\\\screenshot-settings.png\")",
       "Bash(gh workflow:*)",
       "Bash(gh release list:*)",
-      "Bash(git remote:*)"
+      "Bash(git remote:*)",
+      "Bash(npm run version:patch:*)"
     ]
   }
 }

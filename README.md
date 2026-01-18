@@ -105,9 +105,9 @@ Go to [**Releases**](https://github.com/PopeYeahWine/MeterAI/releases) and downl
 
 | Platform | File |
 |----------|------|
-| Windows | `MeterAI_1.1.3_x64-setup.exe` or `.msi` |
-| macOS | `MeterAI_1.1.3_x64.dmg` |
-| Linux | `MeterAI_1.1.3_amd64.AppImage` or `.deb` |
+| Windows | `MeterAI_1.1.4_x64-setup.exe` or `.msi` |
+| macOS | `MeterAI_1.1.4_x64.dmg` |
+| Linux | `MeterAI_1.1.4_amd64.AppImage` or `.deb` |
 
 ### Requirements
 
