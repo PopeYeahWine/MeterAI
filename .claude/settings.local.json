@@ -76,7 +76,9 @@
       "Bash(move \"Capture d''écran 2026-01-18 122126.png\" \"assets\\\\screenshot-collapsed.png\")",
       "Bash(move \"Capture d''écran 2026-01-18 122622.png\" \"assets\\\\screenshot-expanded.png\")",
       "Bash(move \"Capture d''écran 2026-01-18 122642.png\" \"assets\\\\screenshot-settings.png\")",
-      "Bash(gh workflow:*)"
+      "Bash(gh workflow:*)",
+      "Bash(gh release list:*)",
+      "Bash(git remote:*)"
     ]
   }
 }

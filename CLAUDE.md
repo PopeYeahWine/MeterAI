@@ -28,6 +28,7 @@ The version is synchronized across these files (handled automatically by `script
 - `package.json`
 - `src-tauri/tauri.conf.json`
 - `src-tauri/Cargo.toml`
+- `README.md` (download filenames in the Installation section)
 
 The frontend uses `__APP_VERSION__` injected by Vite at build time from `package.json`.
 

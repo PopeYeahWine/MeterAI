@@ -37,6 +37,25 @@ const FILES = {
       const match = content.match(/^version = "(.*)"/m);
       return match ? match[1] : null;
     }
+  },
+  'README.md': {
+    path: path.join(ROOT, 'README.md'),
+    update: (content, version) => {
+      // Update version in download table (MeterAI_x.x.x patterns)
+      return content
+        .replace(/MeterAI_[\d.]+_x64-setup\.exe/g, `MeterAI_${version}_x64-setup.exe`)
+        .replace(/MeterAI_[\d.]+_x64\.dmg/g, `MeterAI_${version}_x64.dmg`)
+        .replace(/MeterAI_[\d.]+_amd64\.AppImage/g, `MeterAI_${version}_amd64.AppImage`)
+        .replace(/MeterAI_[\d.]+_amd64\.deb/g, `MeterAI_${version}_amd64.deb`)
+        // Also handle x.x.x placeholder pattern
+        .replace(/MeterAI_x\.x\.x_x64-setup\.exe/g, `MeterAI_${version}_x64-setup.exe`)
+        .replace(/MeterAI_x\.x\.x_x64\.dmg/g, `MeterAI_${version}_x64.dmg`)
+        .replace(/MeterAI_x\.x\.x_amd64\.AppImage/g, `MeterAI_${version}_amd64.AppImage`);
+    },
+    getVersion: (content) => {
+      const match = content.match(/MeterAI_([\d.]+)_x64-setup\.exe/);
+      return match ? match[1] : 'x.x.x';
+    }
   }
 };
 
