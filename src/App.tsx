@@ -130,11 +130,12 @@ function App() {
 
   // Track enabled state for all AI providers (from providers.ts)
   const [enabledProviders, setEnabledProviders] = useState<Record<string, boolean>>(() => {
-    // Initialize with Claude Pro/Max and ChatGPT Plus/Pro enabled by default
+    // Only enable Claude Pro/Max by default (the only fully supported provider)
+    // All "Coming soon" providers must be disabled
     const initial: Record<string, boolean> = {}
     AI_PROVIDERS.forEach(p => {
-      // Enable Claude Pro/Max and ChatGPT Plus/Pro by default (most common subscriptions)
-      initial[p.id] = p.id === 'claude-pro-max' || p.id === 'chatgpt-plus-pro'
+      // Only Claude Pro/Max is enabled by default
+      initial[p.id] = p.id === 'claude-pro-max'
     })
     return initial
   })
@@ -256,7 +257,8 @@ function App() {
       const remaining = Math.max(0, usage.resetTime - now)
 
       if (remaining <= 0) {
-        setCountdown('Resetting...')
+        // Session ended or not started - show waiting state
+        setCountdown('Waiting to start')
         return
       }
 
@@ -623,20 +625,39 @@ function App() {
     )
   }
 
+  // Check if Claude session is active (has a valid future reset time and usage > 0)
+  const isClaudeSessionActive = (resetStr: string | null | undefined, usagePercent: number | null | undefined): boolean => {
+    if (!resetStr) return false
+    if (usagePercent === null || usagePercent === undefined || usagePercent === 0) return false
+    try {
+      const resetDate = new Date(resetStr)
+      const now = new Date()
+      return resetDate.getTime() > now.getTime()
+    } catch {
+      return false
+    }
+  }
+
   // Helper to format reset time
-  const formatResetTime = (resetStr: string | null | undefined) => {
-    if (!resetStr) return countdown
+  const formatResetTime = (resetStr: string | null | undefined, usagePercent?: number | null) => {
+    // If no session active (no usage or expired), show waiting state
+    if (!resetStr) return 'Waiting to start'
     try {
       const resetDate = new Date(resetStr)
       const now = new Date()
       const diff = resetDate.getTime() - now.getTime()
-      if (diff <= 0) return 'Now'
+      // If reset time passed or usage is 0, session is not active
+      if (diff <= 0) return 'Waiting to start'
+      // If we have usage info and it's 0, we're waiting
+      if (usagePercent !== undefined && usagePercent !== null && usagePercent === 0) {
+        return 'Waiting to start'
+      }
       const hours = Math.floor(diff / (1000 * 60 * 60))
       const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
       if (hours > 0) return `${hours}h ${minutes.toString().padStart(2, '0')}m`
       return `${minutes}m`
     } catch {
-      return countdown
+      return 'Waiting to start'
     }
   }
 
@@ -1145,9 +1166,9 @@ function App() {
       ? Math.round(claudeCodeUsage.five_hour_percent)
       : anthropicUsage.percent
 
-    // Format reset time for compact display
+    // Format reset time for compact display - pass usage percent to detect waiting state
     const compactResetDisplay = claudeCodeUsage?.success && claudeCodeUsage?.five_hour_reset
-      ? formatResetTime(claudeCodeUsage.five_hour_reset)
+      ? formatResetTime(claudeCodeUsage.five_hour_reset, claudeCodeUsage.five_hour_percent)
       : countdown
 
     return (
@@ -1186,8 +1207,8 @@ function App() {
               </div>
               {isAnthropicConfigured && (
                 <div
-                  className="provider-reset-row"
-                  style={{ color: getTimeGradientColor(getTimeProgress(claudeCodeUsage?.five_hour_reset)) }}
+                  className={`provider-reset-row ${compactResetDisplay === 'Waiting to start' ? 'waiting' : ''}`}
+                  style={{ color: compactResetDisplay === 'Waiting to start' ? '#22F0B6' : getTimeGradientColor(getTimeProgress(claudeCodeUsage?.five_hour_reset)) }}
                 >
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <circle cx="12" cy="12" r="10"></circle>
@@ -1508,16 +1529,16 @@ function App() {
                   <Battery percent={claudeFiveHourPercent} color="#d97706" disabled={!isAnthropicConfigured} uniqueId="claude-expanded" />
                   <span className="provider-percent">{isAnthropicConfigured ? `${Math.round(claudeFiveHourPercent)}%` : '--'}</span>
                 </div>
-                {isAnthropicConfigured && claudeCodeUsage?.success && (
+                {isAnthropicConfigured && (
                   <div
-                    className="provider-reset-row"
-                    style={{ color: getTimeGradientColor(getTimeProgress(claudeCodeUsage?.five_hour_reset)) }}
+                    className={`provider-reset-row ${!isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? 'waiting' : ''}`}
+                    style={{ color: !isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? '#22F0B6' : getTimeGradientColor(getTimeProgress(claudeCodeUsage?.five_hour_reset)) }}
                   >
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <circle cx="12" cy="12" r="10"></circle>
                       <polyline points="12,6 12,12 16,14"></polyline>
                     </svg>
-                    {formatResetTime(claudeCodeUsage?.five_hour_reset)}
+                    {formatResetTime(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent)}
                   </div>
                 )}
               </div>
@@ -1651,9 +1672,10 @@ function App() {
                     const isRefreshing = refreshingProvider === providerId
 
                     // Special handling for Claude with real OAuth data
-                    const isClaudeWithRealData = isClaudeProvider && hasClaudeCodeToken && claudeCodeUsage?.success
+                    // Show detailed card if we have Claude Code token, even if no active session (usage=0)
+                    const isClaudeWithRealData = isClaudeProvider && hasClaudeCodeToken && (claudeCodeUsage?.success || claudeCodeUsage !== null)
                     const displayPercent = isClaudeWithRealData
-                      ? Math.round(claudeFiveHourPercent)
+                      ? Math.round(claudeFiveHourPercent ?? 0)
                       : provUsage.percent
 
                     const refreshProvider = async () => {
@@ -1737,22 +1759,34 @@ function App() {
                             </div>
                           </div>
                           <div className="expanded-time-progress">
-                            <div className="expanded-time-label">Time Elapsed</div>
+                            <div className="expanded-time-label">{isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? 'Time Elapsed' : 'Session Status'}</div>
                             <div className="expanded-time-row">
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? 'currentColor' : '#22F0B6'} strokeWidth="2">
                                 <circle cx="12" cy="12" r="10"></circle>
                                 <polyline points="12,6 12,12 16,14"></polyline>
                               </svg>
                               <div className="expanded-time-bar">
-                                <div
-                                  className="expanded-time-fill"
-                                  style={{
-                                    width: `${getTimeProgress(claudeCodeUsage?.five_hour_reset)}%`,
-                                    background: getTimeGradientStyle(getTimeProgress(claudeCodeUsage?.five_hour_reset))
-                                  }}
-                                />
+                                {isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? (
+                                  <div
+                                    className="expanded-time-fill"
+                                    style={{
+                                      width: `${getTimeProgress(claudeCodeUsage?.five_hour_reset)}%`,
+                                      background: getTimeGradientStyle(getTimeProgress(claudeCodeUsage?.five_hour_reset))
+                                    }}
+                                  />
+                                ) : (
+                                  <div
+                                    className="expanded-time-fill waiting"
+                                    style={{
+                                      width: '100%',
+                                      background: 'linear-gradient(90deg, rgba(34, 240, 182, 0.3), rgba(34, 240, 182, 0.1))'
+                                    }}
+                                  />
+                                )}
                               </div>
-                              <span className="expanded-time-badge">Reset {formatResetTime(claudeCodeUsage?.five_hour_reset)}</span>
+                              <span className={`expanded-time-badge ${!isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? 'waiting' : ''}`} style={!isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? { color: '#22F0B6' } : {}}>
+                                {isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? `Reset ${formatResetTime(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent)}` : 'Waiting to start'}
+                              </span>
                             </div>
                           </div>
                         </div>
