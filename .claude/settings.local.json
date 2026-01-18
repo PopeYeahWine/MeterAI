@@ -75,7 +75,8 @@
       "Bash(cmd.exe /c \"npm run tauri:build 2>&1\")",
       "Bash(move \"Capture d''écran 2026-01-18 122126.png\" \"assets\\\\screenshot-collapsed.png\")",
       "Bash(move \"Capture d''écran 2026-01-18 122622.png\" \"assets\\\\screenshot-expanded.png\")",
-      "Bash(move \"Capture d''écran 2026-01-18 122642.png\" \"assets\\\\screenshot-settings.png\")"
+      "Bash(move \"Capture d''écran 2026-01-18 122642.png\" \"assets\\\\screenshot-settings.png\")",
+      "Bash(gh workflow:*)"
     ]
   }
 }
