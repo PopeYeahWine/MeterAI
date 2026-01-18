@@ -5,6 +5,7 @@ import { appWindow, LogicalSize } from '@tauri-apps/api/window'
 import { exit } from '@tauri-apps/api/process'
 import { shell } from '@tauri-apps/api'
 import { fetch } from '@tauri-apps/api/http'
+import { platform } from '@tauri-apps/api/os'
 import { AI_PROVIDERS, CATEGORY_INFO, type ProviderCategory, type ProviderDefinition } from './providers'
 
 // Crypto logos
@@ -1248,12 +1249,25 @@ function App() {
     }
   }
 
-  // Check for updates from GitHub (using tags API, not releases)
+  // Check for updates from GitHub releases (only notify when assets for current platform are available)
   const checkForUpdates = useCallback(async () => {
-    console.log(`MeterAI: Fetching tags from GitHub (current: v${APP_VERSION})...`)
+    console.log(`MeterAI: Checking for updates (current: v${APP_VERSION})...`)
     try {
-      // Use tags API instead of releases - tags are always available
-      const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/tags`, {
+      // Detect current platform
+      const currentPlatform = await platform()
+      console.log(`MeterAI: Current platform: ${currentPlatform}`)
+
+      // Map platform to expected asset patterns
+      const platformAssetPatterns: Record<string, RegExp[]> = {
+        'win32': [/\.exe$/i, /\.msi$/i],
+        'darwin': [/\.dmg$/i, /\.app\.tar\.gz$/i],
+        'linux': [/\.AppImage$/i, /\.deb$/i]
+      }
+
+      const expectedPatterns = platformAssetPatterns[currentPlatform] || []
+
+      // Fetch latest release (not tags) - only published releases with assets
+      const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
         method: 'GET',
         headers: {
           'Accept': 'application/vnd.github.v3+json',
@@ -1263,64 +1277,75 @@ function App() {
 
       console.log('MeterAI: GitHub API response:', response.status, response.ok)
 
-      // Tauri fetch returns { ok, status, data }
       if (response.ok && response.data) {
-        const tags = response.data as Array<{ name: string }>
-        console.log('MeterAI: Tags found:', tags.length)
+        const release = response.data as {
+          tag_name: string
+          name: string
+          draft: boolean
+          prerelease: boolean
+          assets: Array<{ name: string; state: string }>
+        }
 
-        if (tags && tags.length > 0) {
-          // Find the latest version tag (filter only vX.X.X format)
-          const versionTags = tags
-            .map(t => t.name)
-            .filter(name => /^v?\d+\.\d+\.\d+$/.test(name))
-            .map(name => name.replace(/^v/, ''))
-            .sort((a, b) => {
-              const aParts = a.split('.').map(Number)
-              const bParts = b.split('.').map(Number)
-              for (let i = 0; i < 3; i++) {
-                if ((bParts[i] || 0) !== (aParts[i] || 0)) {
-                  return (bParts[i] || 0) - (aParts[i] || 0)
-                }
-              }
-              return 0
-            })
+        // Skip drafts and prereleases
+        if (release.draft || release.prerelease) {
+          console.log('MeterAI: Latest release is draft/prerelease, skipping')
+          setLastUpdateCheck(Date.now())
+          localStorage.setItem('lastUpdateCheck', Date.now().toString())
+          return
+        }
 
-          const latestVersion = versionTags[0] || ''
-          console.log(`MeterAI: Latest version tag: ${latestVersion}`)
+        const latestVersion = release.tag_name.replace(/^v/, '')
+        console.log(`MeterAI: Latest release: v${latestVersion}`)
+        console.log(`MeterAI: Assets count: ${release.assets?.length || 0}`)
 
-          // Compare versions
-          if (latestVersion && latestVersion !== APP_VERSION) {
-            const currentParts = APP_VERSION.split('.').map(Number)
-            const latestParts = latestVersion.split('.').map(Number)
+        // Check if assets for current platform are available
+        const platformAssets = release.assets?.filter(asset =>
+          asset.state === 'uploaded' && expectedPatterns.some(pattern => pattern.test(asset.name))
+        ) || []
 
-            let isNewer = false
-            for (let i = 0; i < Math.max(currentParts.length, latestParts.length); i++) {
-              const current = currentParts[i] || 0
-              const latest = latestParts[i] || 0
-              if (latest > current) {
-                isNewer = true
-                break
-              } else if (latest < current) {
-                break
-              }
+        console.log(`MeterAI: Platform assets found: ${platformAssets.length}`)
+        platformAssets.forEach(a => console.log(`  - ${a.name}`))
+
+        if (platformAssets.length === 0) {
+          console.log(`MeterAI: No assets available for ${currentPlatform} yet (build in progress?)`)
+          // Don't notify - assets not ready for this platform
+          setLastUpdateCheck(Date.now())
+          localStorage.setItem('lastUpdateCheck', Date.now().toString())
+          return
+        }
+
+        // Compare versions
+        if (latestVersion && latestVersion !== APP_VERSION) {
+          const currentParts = APP_VERSION.split('.').map(Number)
+          const latestParts = latestVersion.split('.').map(Number)
+
+          let isNewer = false
+          for (let i = 0; i < Math.max(currentParts.length, latestParts.length); i++) {
+            const current = currentParts[i] || 0
+            const latest = latestParts[i] || 0
+            if (latest > current) {
+              isNewer = true
+              break
+            } else if (latest < current) {
+              break
             }
+          }
 
-            if (isNewer) {
-              setUpdateAvailable(latestVersion)
-              console.log(`MeterAI: Update available! v${latestVersion} > v${APP_VERSION}`)
-            } else {
-              console.log(`MeterAI: No update needed (${latestVersion} is not newer than ${APP_VERSION})`)
-              setUpdateAvailable(null)
-            }
+          if (isNewer) {
+            setUpdateAvailable(latestVersion)
+            console.log(`MeterAI: Update available! v${latestVersion} > v${APP_VERSION} (assets ready for ${currentPlatform})`)
           } else {
-            console.log(`MeterAI: Already on latest version (${APP_VERSION})`)
+            console.log(`MeterAI: No update needed (${latestVersion} is not newer than ${APP_VERSION})`)
             setUpdateAvailable(null)
           }
         } else {
-          console.log('MeterAI: No tags found')
+          console.log(`MeterAI: Already on latest version (${APP_VERSION})`)
+          setUpdateAvailable(null)
         }
+      } else if (response.status === 404) {
+        console.log('MeterAI: No releases found')
       } else {
-        console.log('MeterAI: No data in response or request failed')
+        console.log('MeterAI: Failed to fetch release info')
       }
       setLastUpdateCheck(Date.now())
       localStorage.setItem('lastUpdateCheck', Date.now().toString())
