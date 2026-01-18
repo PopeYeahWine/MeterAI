@@ -84,6 +84,445 @@ interface ClaudeCodeUsageResult {
 
 type ViewMode = 'compact' | 'expanded' | 'settings'
 
+// Custom Stepper Component for threshold inputs
+const ThresholdStepper = ({
+  value,
+  onChange,
+  min = 0,
+  max = 100,
+  disabled = false
+}: {
+  value: number
+  onChange: (value: number) => void
+  min?: number
+  max?: number
+  disabled?: boolean
+}) => {
+  const handleDecrement = () => {
+    if (value > min) onChange(value - 1)
+  }
+  const handleIncrement = () => {
+    if (value < max) onChange(value + 1)
+  }
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newValue = parseInt(e.target.value) || 0
+    onChange(Math.max(min, Math.min(max, newValue)))
+  }
+
+  return (
+    <div className="threshold-stepper">
+      <button
+        type="button"
+        className="stepper-btn decrement"
+        onClick={handleDecrement}
+        disabled={disabled || value <= min}
+        aria-label="Decrease"
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+      </button>
+      <input
+        type="text"
+        className="stepper-input"
+        value={value}
+        onChange={handleInputChange}
+        disabled={disabled}
+        inputMode="numeric"
+        pattern="[0-9]*"
+      />
+      <button
+        type="button"
+        className="stepper-btn increment"
+        onClick={handleIncrement}
+        disabled={disabled || value >= max}
+        aria-label="Increase"
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+      </button>
+    </div>
+  )
+}
+
+// Provider Settings Panel - Extracted as separate component to prevent remount
+interface ProviderSettingsPanelProps {
+  providerId: string | null
+  onClose: () => void
+  providerThresholds: Record<string, { green: number; yellow: number; orange: number; red: number }>
+  setProviderThresholds: React.Dispatch<React.SetStateAction<Record<string, { green: number; yellow: number; orange: number; red: number }>>>
+  providerTimeThresholds: Record<string, { red: number; orange: number; yellow: number; blue: number }>
+  setProviderTimeThresholds: React.Dispatch<React.SetStateAction<Record<string, { red: number; orange: number; yellow: number; blue: number }>>>
+  configStatus: { detected: boolean; source: string; customPath: string | null }
+  setConfigStatus: React.Dispatch<React.SetStateAction<{ detected: boolean; source: string; customPath: string | null }>>
+  setHasClaudeCodeToken: React.Dispatch<React.SetStateAction<boolean>>
+  refreshClaudeCodeUsage: () => Promise<void>
+}
+
+const ProviderSettingsPanel = ({
+  providerId,
+  onClose,
+  providerThresholds,
+  setProviderThresholds,
+  providerTimeThresholds,
+  setProviderTimeThresholds,
+  configStatus,
+  setConfigStatus,
+  setHasClaudeCodeToken,
+  refreshClaudeCodeUsage
+}: ProviderSettingsPanelProps) => {
+  // Local accordion states - stable because component is not recreated
+  const [usageThresholdsOpen, setUsageThresholdsOpen] = useState(false)
+  const [timeThresholdsOpen, setTimeThresholdsOpen] = useState(false)
+
+  if (!providerId) return null
+
+  const providerDef = AI_PROVIDERS.find(p => p.id === providerId)
+  if (!providerDef) return null
+
+  const thresholds = providerThresholds[providerId] || { green: 70, yellow: 85, orange: 95, red: 100 }
+  const timeThresholds = providerTimeThresholds[providerId] || { red: 20, orange: 40, yellow: 70, blue: 100 }
+
+  const updateThreshold = (key: 'green' | 'yellow' | 'orange' | 'red', value: number) => {
+    setProviderThresholds(prev => ({
+      ...prev,
+      [providerId]: {
+        ...(prev[providerId] || { green: 70, yellow: 85, orange: 95, red: 100 }),
+        [key]: Math.max(0, Math.min(100, value))
+      }
+    }))
+  }
+
+  const updateTimeThreshold = (key: 'red' | 'orange' | 'yellow' | 'blue', value: number) => {
+    setProviderTimeThresholds(prev => ({
+      ...prev,
+      [providerId]: {
+        ...(prev[providerId] || { red: 20, orange: 40, yellow: 70, blue: 100 }),
+        [key]: Math.max(0, Math.min(100, value))
+      }
+    }))
+  }
+
+  const handleRedetect = async () => {
+    try {
+      const hasToken = await invoke<boolean>('has_claude_code_token')
+      setHasClaudeCodeToken(hasToken)
+      if (hasToken) {
+        await refreshClaudeCodeUsage()
+      }
+      const status = await invoke<{ detected: boolean; source: string; customPath: string | null }>('get_config_detection_status')
+      setConfigStatus(status)
+    } catch (e) {
+      console.error('Failed to re-detect credentials:', e)
+    }
+  }
+
+  const handleBrowseCredentials = async () => {
+    try {
+      const path = await invoke<string | null>('browse_credentials_file')
+      if (path) {
+        await invoke('set_custom_credentials_path', { path })
+        const status = await invoke<{ detected: boolean; source: string; customPath: string | null }>('get_config_detection_status')
+        setConfigStatus(status)
+        await handleRedetect()
+      }
+    } catch (e) {
+      console.error('Failed to browse credentials:', e)
+    }
+  }
+
+  const handleResetThresholds = () => {
+    setProviderThresholds(prev => ({
+      ...prev,
+      [providerId]: { green: 70, yellow: 85, orange: 95, red: 100 }
+    }))
+    setProviderTimeThresholds(prev => ({
+      ...prev,
+      [providerId]: { red: 20, orange: 40, yellow: 70, blue: 100 }
+    }))
+  }
+
+  // Format path with middle ellipsis, keeping end visible (filename)
+  const formatPath = (path: string, maxLen: number = 45) => {
+    if (path.length <= maxLen) return path
+    // Keep more of the end to show filename
+    const endLen = Math.min(25, Math.floor(maxLen * 0.55))
+    const startLen = maxLen - endLen - 3
+    return `${path.slice(0, startLen)}...${path.slice(-endLen)}`
+  }
+
+  // Extract path from configStatus.source (format: "auto:path" or "custom:path" or "env:...")
+  const getDetectedPath = (): string | null => {
+    if (!configStatus.source || configStatus.source === 'none') return null
+    if (configStatus.source.startsWith('env:')) return configStatus.source // Show env var name
+    const colonIndex = configStatus.source.indexOf(':')
+    if (colonIndex > 0) {
+      return configStatus.source.slice(colonIndex + 1)
+    }
+    return null
+  }
+
+  const detectedPath = getDetectedPath()
+
+  return (
+    <div className="provider-settings-overlay" onClick={onClose}>
+      <div className="provider-settings-panel" onClick={e => e.stopPropagation()}>
+        {/* Header - Brand + Plan on same line */}
+        <div className="provider-settings-header">
+          <span className="provider-settings-icon" style={{ background: providerDef.color }}>
+            {providerDef.icon}
+          </span>
+          <div className="provider-settings-title-inline">
+            <span className="provider-settings-brand">{providerDef.brand}</span>
+            <span className="provider-settings-plan">{providerDef.name}</span>
+          </div>
+          <button className="provider-settings-close" onClick={onClose}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+
+        {/* Configuration Section */}
+        <div className="provider-settings-section">
+          <h4 className="provider-settings-section-title">Configuration</h4>
+          <div className="config-detection-box">
+            <div className="config-detection-status">
+              <span className={`config-detection-dot ${configStatus.detected ? 'detected' : 'not-detected'}`}></span>
+              <span className="config-detection-text">
+                {configStatus.detected ? (
+                  <>Credentials <strong>detected</strong></>
+                ) : (
+                  <>Credentials <strong>not found</strong></>
+                )}
+              </span>
+            </div>
+            {detectedPath && (
+              <div className="config-detection-path" title={detectedPath}>
+                {formatPath(detectedPath)}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Usage Color Thresholds - Accordion */}
+        <div className="provider-settings-accordion">
+          <div
+            className={`accordion-header ${usageThresholdsOpen ? 'open' : ''}`}
+            onClick={() => setUsageThresholdsOpen(!usageThresholdsOpen)}
+          >
+            <svg
+              className={`accordion-chevron ${usageThresholdsOpen ? 'open' : ''}`}
+              width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+            >
+              <polyline points="9,18 15,12 9,6"></polyline>
+            </svg>
+            <span className="accordion-title">Usage Thresholds</span>
+            {!usageThresholdsOpen && (
+              <div className="accordion-mini-preview">
+                <div
+                  className="threshold-preview-bar mini"
+                  style={{
+                    '--green-end': `${thresholds.green}%`,
+                    '--yellow-end': `${thresholds.yellow}%`,
+                    '--orange-end': `${thresholds.orange}%`
+                  } as React.CSSProperties}
+                ></div>
+              </div>
+            )}
+          </div>
+          {usageThresholdsOpen && (
+            <div className="accordion-content">
+              <div className="threshold-row">
+                <span className="threshold-label">
+                  <span className="threshold-color-dot green"></span>
+                  Green (OK)
+                </span>
+                <div className="threshold-input-group">
+                  <span className="threshold-range-label">0 -</span>
+                  <ThresholdStepper value={thresholds.green} onChange={v => updateThreshold('green', v)} />
+                  <span className="threshold-unit">%</span>
+                </div>
+              </div>
+              <div className="threshold-row">
+                <span className="threshold-label">
+                  <span className="threshold-color-dot yellow"></span>
+                  Yellow (Caution)
+                </span>
+                <div className="threshold-input-group">
+                  <span className="threshold-range-label">{thresholds.green} -</span>
+                  <ThresholdStepper value={thresholds.yellow} onChange={v => updateThreshold('yellow', v)} />
+                  <span className="threshold-unit">%</span>
+                </div>
+              </div>
+              <div className="threshold-row">
+                <span className="threshold-label">
+                  <span className="threshold-color-dot orange"></span>
+                  Orange (Warning)
+                </span>
+                <div className="threshold-input-group">
+                  <span className="threshold-range-label">{thresholds.yellow} -</span>
+                  <ThresholdStepper value={thresholds.orange} onChange={v => updateThreshold('orange', v)} />
+                  <span className="threshold-unit">%</span>
+                </div>
+              </div>
+              <div className="threshold-row">
+                <span className="threshold-label">
+                  <span className="threshold-color-dot red"></span>
+                  Red (Critical)
+                </span>
+                <div className="threshold-input-group">
+                  <span className="threshold-range-label">{thresholds.orange} - 100%</span>
+                </div>
+              </div>
+              <div className="threshold-preview">
+                <div className="threshold-preview-label">Preview</div>
+                <div
+                  className="threshold-preview-bar"
+                  style={{
+                    '--green-end': `${thresholds.green}%`,
+                    '--yellow-end': `${thresholds.yellow}%`,
+                    '--orange-end': `${thresholds.orange}%`
+                  } as React.CSSProperties}
+                ></div>
+                <div className="threshold-preview-markers">
+                  <span>0%</span>
+                  <span>{thresholds.green}%</span>
+                  <span>{thresholds.yellow}%</span>
+                  <span>{thresholds.orange}%</span>
+                  <span>100%</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Time Lapse Color Thresholds - Accordion */}
+        <div className="provider-settings-accordion">
+          <div
+            className={`accordion-header ${timeThresholdsOpen ? 'open' : ''}`}
+            onClick={() => setTimeThresholdsOpen(!timeThresholdsOpen)}
+          >
+            <svg
+              className={`accordion-chevron ${timeThresholdsOpen ? 'open' : ''}`}
+              width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+            >
+              <polyline points="9,18 15,12 9,6"></polyline>
+            </svg>
+            <span className="accordion-title">Time Lapse Thresholds</span>
+            {!timeThresholdsOpen && (
+              <div className="accordion-mini-preview">
+                <div
+                  className="threshold-preview-bar-time mini"
+                  style={{
+                    '--red-end': `${timeThresholds.red}%`,
+                    '--orange-end': `${timeThresholds.orange}%`,
+                    '--yellow-end': `${timeThresholds.yellow}%`
+                  } as React.CSSProperties}
+                ></div>
+              </div>
+            )}
+          </div>
+          {timeThresholdsOpen && (
+            <div className="accordion-content">
+              <div className="threshold-row">
+                <span className="threshold-label">
+                  <span className="threshold-color-dot time-red"></span>
+                  Red (Just started)
+                </span>
+                <div className="threshold-input-group">
+                  <span className="threshold-range-label">0 -</span>
+                  <ThresholdStepper value={timeThresholds.red} onChange={v => updateTimeThreshold('red', v)} />
+                  <span className="threshold-unit">%</span>
+                </div>
+              </div>
+              <div className="threshold-row">
+                <span className="threshold-label">
+                  <span className="threshold-color-dot time-orange"></span>
+                  Orange (Early)
+                </span>
+                <div className="threshold-input-group">
+                  <span className="threshold-range-label">{timeThresholds.red} -</span>
+                  <ThresholdStepper value={timeThresholds.orange} onChange={v => updateTimeThreshold('orange', v)} />
+                  <span className="threshold-unit">%</span>
+                </div>
+              </div>
+              <div className="threshold-row">
+                <span className="threshold-label">
+                  <span className="threshold-color-dot time-yellow"></span>
+                  Yellow (Midway)
+                </span>
+                <div className="threshold-input-group">
+                  <span className="threshold-range-label">{timeThresholds.orange} -</span>
+                  <ThresholdStepper value={timeThresholds.yellow} onChange={v => updateTimeThreshold('yellow', v)} />
+                  <span className="threshold-unit">%</span>
+                </div>
+              </div>
+              <div className="threshold-row">
+                <span className="threshold-label">
+                  <span className="threshold-color-dot time-blue"></span>
+                  Blue (Near reset)
+                </span>
+                <div className="threshold-input-group">
+                  <span className="threshold-range-label">{timeThresholds.yellow} - 100%</span>
+                </div>
+              </div>
+              <div className="threshold-preview">
+                <div className="threshold-preview-label">Preview</div>
+                <div
+                  className="threshold-preview-bar-time"
+                  style={{
+                    '--red-end': `${timeThresholds.red}%`,
+                    '--orange-end': `${timeThresholds.orange}%`,
+                    '--yellow-end': `${timeThresholds.yellow}%`
+                  } as React.CSSProperties}
+                ></div>
+                <div className="threshold-preview-markers">
+                  <span>0%</span>
+                  <span>{timeThresholds.red}%</span>
+                  <span>{timeThresholds.orange}%</span>
+                  <span>{timeThresholds.yellow}%</span>
+                  <span>100%</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Actions */}
+        <div className="provider-settings-actions">
+          <div className="provider-settings-actions-row">
+            <button className="provider-settings-btn-action primary" onClick={handleRedetect}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M23 4v6h-6"></path>
+                <path d="M1 20v-6h6"></path>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              </svg>
+              Re-detect
+            </button>
+            <button className="provider-settings-btn-action secondary" onClick={handleBrowseCredentials}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+              </svg>
+              Browse...
+            </button>
+          </div>
+          <button className="provider-settings-btn-action danger" onClick={handleResetThresholds}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 6h18"></path>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+            Reset Defaults
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const [usage, setUsage] = useState<UsageData>({
     used: 0,
@@ -118,6 +557,16 @@ function App() {
     source: string;
     customPath: string | null;
   }>({ detected: false, source: 'none', customPath: null })
+  // Provider settings panel
+  const [providerSettingsOpen, setProviderSettingsOpen] = useState<string | null>(null)
+  const [providerThresholds, setProviderThresholds] = useState<Record<string, { green: number; yellow: number; orange: number; red: number }>>({
+    'claude-pro-max': { green: 70, yellow: 85, orange: 95, red: 100 }
+  })
+  const [providerTimeThresholds, setProviderTimeThresholds] = useState<Record<string, { red: number; orange: number; yellow: number; blue: number }>>({
+    'claude-pro-max': { red: 20, orange: 40, yellow: 70, blue: 100 }
+  })
+  // Note: accordion states moved inside ProviderSettingsPanel to prevent flicker
+  const [detectedCredentialPaths, setDetectedCredentialPaths] = useState<string[]>([])
   // Collapsed state for categories - coding is open by default
   const [collapsedCategories, setCollapsedCategories] = useState<Record<ProviderCategory, boolean>>({
     coding: false, // Open by default
@@ -285,7 +734,8 @@ function App() {
     try {
       // First check if token is still available
       const hasToken = await invoke<boolean>('has_claude_code_token')
-      setHasClaudeCodeToken(hasToken)
+      // Only update state if value changed to avoid unnecessary re-renders
+      setHasClaudeCodeToken(prev => prev !== hasToken ? hasToken : prev)
 
       if (!hasToken) {
         console.log('MeterAI: No Claude Code token available')
@@ -294,19 +744,36 @@ function App() {
 
       console.log('MeterAI: Refreshing Claude Code usage...')
       const ccUsage = await invoke<ClaudeCodeUsageResult>('get_claude_code_usage')
-      setClaudeCodeUsage(ccUsage)
+
+      // Only update if data is different to minimize re-renders
+      setClaudeCodeUsage(prev => {
+        if (!prev || prev.five_hour_percent !== ccUsage.five_hour_percent ||
+            prev.five_hour_reset !== ccUsage.five_hour_reset ||
+            prev.seven_day_percent !== ccUsage.seven_day_percent) {
+          return ccUsage
+        }
+        return prev
+      })
 
       if (ccUsage.success) {
         const percent = ccUsage.five_hour_percent ?? 0
         console.log(`MeterAI: Usage updated - 5h: ${percent}%, reset: ${ccUsage.five_hour_reset}`)
-        setProvidersUsage(prev => ({
-          ...prev,
-          'claude-pro-max': {
-            used: Math.round(percent),
-            limit: 100,
-            percent: Math.round(percent)
+        setProvidersUsage(prev => {
+          const current = prev['claude-pro-max']
+          const newPercent = Math.round(percent)
+          // Only update if changed
+          if (!current || current.percent !== newPercent) {
+            return {
+              ...prev,
+              'claude-pro-max': {
+                used: newPercent,
+                limit: 100,
+                percent: newPercent
+              }
+            }
           }
-        }))
+          return prev
+        })
       } else {
         console.log('MeterAI: Usage fetch returned success=false')
       }
@@ -688,19 +1155,20 @@ function App() {
     }
   }
 
-  // Get gradient for usage gauge (vert-based: <70% vert, 70-85% +jaune, 85-95% +orange, 95-100% +rouge)
-  const getUsageGradientStyle = (percent: number): string => {
-    if (percent < 70) {
-      // Vert clair -> Vert
+  // Get gradient for usage gauge with customizable thresholds
+  const getUsageGradientStyle = (percent: number, providerId: string = 'claude-pro-max'): string => {
+    const thresholds = providerThresholds[providerId] || { green: 70, yellow: 85, orange: 95, red: 100 }
+    if (percent < thresholds.green) {
+      // Green
       return 'linear-gradient(90deg, #4ade80, #22c55e)'
-    } else if (percent < 85) {
-      // Vert -> Jaune
+    } else if (percent < thresholds.yellow) {
+      // Green -> Yellow
       return 'linear-gradient(90deg, #22c55e, #4ade80, #eab308)'
-    } else if (percent < 95) {
-      // Vert -> Jaune -> Orange
+    } else if (percent < thresholds.orange) {
+      // Green -> Yellow -> Orange
       return 'linear-gradient(90deg, #22c55e, #eab308, #f97316)'
     } else {
-      // Vert -> Jaune -> Orange -> Rouge
+      // Green -> Yellow -> Orange -> Red
       return 'linear-gradient(90deg, #22c55e, #eab308, #f97316, #ef4444)'
     }
   }
@@ -1206,40 +1674,42 @@ function App() {
           <span className="banner-title">MeterAI</span>
         </div>
 
-        {/* Providers - also draggable */}
-        <div className="banner-providers">
-          {/* Claude/Anthropic - only show if enabled */}
-          {(anthropicProvider?.enabled || hasClaudeCodeToken) && (
-            <div className={`banner-provider-wrapper ${!isAnthropicConfigured ? 'disabled' : ''}`} title={isAnthropicConfigured ? `Claude: ${claudeDisplayPercent}% (5h) - Reset: ${compactResetDisplay}` : 'Claude: Not configured'}>
-              <div className="banner-provider-main">
-                <span className="provider-label">Claude</span>
-                <Battery percent={claudeDisplayPercent} color="#d97706" disabled={!isAnthropicConfigured} uniqueId="claude-compact" />
-                <span className="provider-percent">{isAnthropicConfigured ? `${claudeDisplayPercent}%` : '--'}</span>
-              </div>
-              {isAnthropicConfigured && (
-                <div
-                  className={`provider-reset-row ${compactResetDisplay === 'Waiting to start' ? 'waiting' : ''}`}
-                  style={{ color: compactResetDisplay === 'Waiting to start' ? '#22F0B6' : getTimeGradientColor(getTimeProgress(claudeCodeUsage?.five_hour_reset)) }}
-                >
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <polyline points="12,6 12,12 16,14"></polyline>
-                  </svg>
-                  {compactResetDisplay}
+        {/* Providers - only show if at least one is enabled */}
+        {(enabledProviders['claude-pro-max'] || enabledProviders['openai']) && (
+          <div className="banner-providers">
+            {/* Claude/Anthropic - only show if enabled via toggle */}
+            {enabledProviders['claude-pro-max'] && (
+              <div className={`banner-provider-wrapper ${!isAnthropicConfigured ? 'disabled' : ''}`} title={isAnthropicConfigured ? `Claude: ${claudeDisplayPercent}% (5h) - Reset: ${compactResetDisplay}` : 'Claude: Not configured'}>
+                <div className="banner-provider-main">
+                  <span className="provider-label">Claude</span>
+                  <Battery percent={claudeDisplayPercent} color="#d97706" disabled={!isAnthropicConfigured} uniqueId="claude-compact" />
+                  <span className="provider-percent">{isAnthropicConfigured ? `${claudeDisplayPercent}%` : '--'}</span>
                 </div>
-              )}
-            </div>
-          )}
+                {isAnthropicConfigured && (
+                  <div
+                    className={`provider-reset-row ${compactResetDisplay === 'Waiting to start' ? 'waiting' : ''}`}
+                    style={{ color: compactResetDisplay === 'Waiting to start' ? '#22F0B6' : getTimeGradientColor(getTimeProgress(claudeCodeUsage?.five_hour_reset)) }}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <polyline points="12,6 12,12 16,14"></polyline>
+                    </svg>
+                    {compactResetDisplay}
+                  </div>
+                )}
+              </div>
+            )}
 
-          {/* OpenAI - only show if enabled */}
-          {openaiProvider?.enabled && (
-            <div className={`banner-provider ${!isOpenaiConfigured ? 'disabled' : ''}`} title={isOpenaiConfigured ? `OpenAI: ${openaiUsage.percent}%` : 'OpenAI: Not configured'}>
-              <span className="provider-label">OpenAI</span>
-              <Battery percent={openaiUsage.percent} color="#10a37f" disabled={!isOpenaiConfigured} uniqueId="openai-compact" />
-              <span className="provider-percent">{isOpenaiConfigured ? `${openaiUsage.percent}%` : '--'}</span>
-            </div>
-          )}
-        </div>
+            {/* OpenAI - only show if enabled via toggle */}
+            {enabledProviders['openai'] && (
+              <div className={`banner-provider ${!isOpenaiConfigured ? 'disabled' : ''}`} title={isOpenaiConfigured ? `OpenAI: ${openaiUsage.percent}%` : 'OpenAI: Not configured'}>
+                <span className="provider-label">OpenAI</span>
+                <Battery percent={openaiUsage.percent} color="#10a37f" disabled={!isOpenaiConfigured} uniqueId="openai-compact" />
+                <span className="provider-percent">{isOpenaiConfigured ? `${openaiUsage.percent}%` : '--'}</span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Actions */}
         {/* Actions - stop propagation for buttons */}
@@ -1506,6 +1976,19 @@ function App() {
       <div className="expanded-container">
         {/* Popup for Claude Code detection */}
         <ClaudeDetectedPopup />
+        {/* Provider settings panel */}
+        <ProviderSettingsPanel
+          providerId={providerSettingsOpen}
+          onClose={() => setProviderSettingsOpen(null)}
+          providerThresholds={providerThresholds}
+          setProviderThresholds={setProviderThresholds}
+          providerTimeThresholds={providerTimeThresholds}
+          setProviderTimeThresholds={setProviderTimeThresholds}
+          configStatus={configStatus}
+          setConfigStatus={setConfigStatus}
+          setHasClaudeCodeToken={setHasClaudeCodeToken}
+          refreshClaudeCodeUsage={refreshClaudeCodeUsage}
+        />
 
         {/* Same banner as compact mode */}
         <div className="banner-container" onMouseDown={startDrag}>
@@ -1530,39 +2013,41 @@ function App() {
             <span className="banner-title">MeterAI</span>
           </div>
 
-          {/* Providers - also draggable */}
-          <div className="banner-providers">
-            {/* Claude/Anthropic - only show if enabled */}
-            {(anthropicProvider?.enabled || hasClaudeCodeToken) && (
-              <div className={`banner-provider-wrapper ${!isAnthropicConfigured ? 'disabled' : ''}`}>
-                <div className="banner-provider-main">
-                  <span className="provider-label">Claude</span>
-                  <Battery percent={claudeFiveHourPercent} color="#d97706" disabled={!isAnthropicConfigured} uniqueId="claude-expanded" />
-                  <span className="provider-percent">{isAnthropicConfigured ? `${Math.round(claudeFiveHourPercent)}%` : '--'}</span>
-                </div>
-                {isAnthropicConfigured && (
-                  <div
-                    className={`provider-reset-row ${!isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? 'waiting' : ''}`}
-                    style={{ color: !isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? '#22F0B6' : getTimeGradientColor(getTimeProgress(claudeCodeUsage?.five_hour_reset)) }}
-                  >
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                      <circle cx="12" cy="12" r="10"></circle>
-                      <polyline points="12,6 12,12 16,14"></polyline>
-                    </svg>
-                    {formatResetTime(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent)}
+          {/* Providers - only show if at least one is enabled */}
+          {(enabledProviders['claude-pro-max'] || enabledProviders['openai']) && (
+            <div className="banner-providers">
+              {/* Claude/Anthropic - only show if enabled via toggle */}
+              {enabledProviders['claude-pro-max'] && (
+                <div className={`banner-provider-wrapper ${!isAnthropicConfigured ? 'disabled' : ''}`}>
+                  <div className="banner-provider-main">
+                    <span className="provider-label">Claude</span>
+                    <Battery percent={claudeFiveHourPercent} color="#d97706" disabled={!isAnthropicConfigured} uniqueId="claude-expanded" />
+                    <span className="provider-percent">{isAnthropicConfigured ? `${Math.round(claudeFiveHourPercent)}%` : '--'}</span>
                   </div>
-                )}
-              </div>
-            )}
-            {/* OpenAI - only show if enabled */}
-            {openaiProvider?.enabled && (
-              <div className={`banner-provider ${!isOpenaiConfigured ? 'disabled' : ''}`}>
-                <span className="provider-label">OpenAI</span>
-                <Battery percent={openaiUsage.percent} color="#10a37f" disabled={!isOpenaiConfigured} uniqueId="openai-expanded" />
-                <span className="provider-percent">{isOpenaiConfigured ? `${openaiUsage.percent}%` : '--'}</span>
-              </div>
-            )}
-          </div>
+                  {isAnthropicConfigured && (
+                    <div
+                      className={`provider-reset-row ${!isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? 'waiting' : ''}`}
+                      style={{ color: !isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? '#22F0B6' : getTimeGradientColor(getTimeProgress(claudeCodeUsage?.five_hour_reset)) }}
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <polyline points="12,6 12,12 16,14"></polyline>
+                      </svg>
+                      {formatResetTime(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent)}
+                    </div>
+                  )}
+                </div>
+              )}
+              {/* OpenAI - only show if enabled via toggle */}
+              {enabledProviders['openai'] && (
+                <div className={`banner-provider ${!isOpenaiConfigured ? 'disabled' : ''}`}>
+                  <span className="provider-label">OpenAI</span>
+                  <Battery percent={openaiUsage.percent} color="#10a37f" disabled={!isOpenaiConfigured} uniqueId="openai-expanded" />
+                  <span className="provider-percent">{isOpenaiConfigured ? `${openaiUsage.percent}%` : '--'}</span>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="banner-actions" onMouseDown={(e) => e.stopPropagation()}>
             <button className="banner-btn chevron-btn up" onClick={toggleExpand} title="Collapse">
@@ -1709,7 +2194,7 @@ function App() {
                       return (
                         <div key={providerId} className="expanded-card">
                           <div className="expanded-card-header">
-                            <label className="expanded-toggle-mini" onClick={(e) => e.stopPropagation()}>
+                            <label className={`expanded-toggle-mini ${!isEnabled ? 'activable' : ''}`} onClick={(e) => e.stopPropagation()}>
                               <input
                                 type="checkbox"
                                 checked={isEnabled}
@@ -1723,12 +2208,10 @@ function App() {
                             <span className="expanded-card-icon" style={{ background: providerDef.color }}>
                               {providerDef.icon}
                             </span>
-                            <span className="expanded-card-name">
-                              {providerDef.brand} <span className="expanded-card-version">{providerDef.name}</span>
+                            <span className="expanded-card-name-inline">
+                              <span className="expanded-card-brand">{providerDef.brand}</span>
+                              <span className="expanded-card-plan">{providerDef.name}</span>
                             </span>
-                            {claudeSevenDayPercent !== undefined && claudeSevenDayPercent !== null && (
-                              <span className="stat-badge stat-7d header-badge">7d: {Math.round(claudeSevenDayPercent)}%</span>
-                            )}
                             <button
                               className={`refresh-btn ${isRefreshing ? 'spinning' : ''}`}
                               onClick={refreshProvider}
@@ -1749,10 +2232,29 @@ function App() {
                               Credits
                               <span className="coming-soon-badge">Soon</span>
                             </button>
+                            <button
+                              className="provider-settings-btn"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setProviderSettingsOpen(providerId)
+                              }}
+                              title="Provider settings"
+                            >
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <circle cx="12" cy="12" r="3"></circle>
+                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                              </svg>
+                            </button>
                             <span className="provider-info-icon" title={`${providerDef.name} - ${providerDef.website}`}>?</span>
                           </div>
                           <div className="expanded-usage-block">
-                            <div className="expanded-usage-label">Usage</div>
+                            <div className="expanded-usage-label-row">
+                              <span className="expanded-usage-label">Usage</span>
+                              <span className="expanded-usage-badge badge-5h">5h: {Math.round(claudeFiveHourPercent)}%</span>
+                              {claudeSevenDayPercent !== undefined && claudeSevenDayPercent !== null && (
+                                <span className="expanded-usage-badge badge-7d">7d: {Math.round(claudeSevenDayPercent)}%</span>
+                              )}
+                            </div>
                             <div className="expanded-usage-row">
                               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                 <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
@@ -1762,15 +2264,19 @@ function App() {
                                   className="expanded-usage-bar-fill"
                                   style={{
                                     width: `${Math.min(displayPercent, 100)}%`,
-                                    background: getUsageGradientStyle(displayPercent)
+                                    background: getUsageGradientStyle(displayPercent, providerId)
                                   }}
                                 />
                               </div>
-                              <span className="expanded-usage-badge">5h: {Math.round(claudeFiveHourPercent)}%</span>
                             </div>
                           </div>
                           <div className="expanded-time-progress">
-                            <div className="expanded-time-label">{isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? 'Time Elapsed' : 'Session Status'}</div>
+                            <div className="expanded-time-label-row">
+                              <span className="expanded-time-label">{isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? 'Time Elapsed' : 'Session Status'}</span>
+                              <span className={`expanded-time-badge ${!isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? 'waiting' : ''}`} style={!isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? { color: '#22F0B6' } : {}}>
+                                {isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? `Reset ${formatResetTime(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent)}` : 'Waiting to start'}
+                              </span>
+                            </div>
                             <div className="expanded-time-row">
                               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? 'currentColor' : '#22F0B6'} strokeWidth="2">
                                 <circle cx="12" cy="12" r="10"></circle>
@@ -1795,9 +2301,6 @@ function App() {
                                   />
                                 )}
                               </div>
-                              <span className={`expanded-time-badge ${!isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? 'waiting' : ''}`} style={!isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? { color: '#22F0B6' } : {}}>
-                                {isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? `Reset ${formatResetTime(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent)}` : 'Waiting to start'}
-                              </span>
                             </div>
                           </div>
                         </div>
@@ -1816,7 +2319,7 @@ function App() {
                         onClick={() => isEnabled && !isComingSoon && openProviderConfig(providerId)}
                       >
                         <label
-                          className={`expanded-toggle-mini provider-card-mini-toggle ${isComingSoon ? 'disabled' : ''}`}
+                          className={`expanded-toggle-mini provider-card-mini-toggle ${isComingSoon ? 'disabled' : ''} ${!isComingSoon && !isEnabled ? 'activable' : ''}`}
                           onClick={(e) => e.stopPropagation()}
                         >
                           <input
@@ -1837,9 +2340,7 @@ function App() {
                         </span>
                         <div className="provider-card-mini-info">
                           <span className="provider-card-mini-name">{providerDef.brand}</span>
-                          <span className="provider-card-mini-version">
-                            {' '}{providerDef.name}
-                          </span>
+                          <span className="provider-card-mini-version">{providerDef.name}</span>
                         </div>
                         <div className="provider-card-mini-status">
                           {isComingSoon ? (

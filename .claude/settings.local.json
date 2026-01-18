@@ -71,7 +71,8 @@
       "Bash(cmd.exe /c \"cd /d c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\\\\src-tauri && cargo check\")",
       "Bash(cmd.exe /c \"cd /d c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\\\\src-tauri && cargo check 2>&1\")",
       "Bash(powershell.exe -Command \"cd ''c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\\\\src-tauri''; cargo check 2>&1\")",
-      "Bash(powershell.exe:*)"
+      "Bash(powershell.exe:*)",
+      "Bash(cmd.exe /c \"npm run tauri:build 2>&1\")"
     ]
   }
 }

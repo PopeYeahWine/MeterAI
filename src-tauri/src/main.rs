@@ -992,18 +992,10 @@ fn get_custom_credentials_path(state: tauri::State<Mutex<AppState>>) -> Option<S
 
 fn create_tray_menu() -> SystemTrayMenu {
     let show = CustomMenuItem::new("show".to_string(), "Show");
-    let add_one = CustomMenuItem::new("add_one".to_string(), "+1 Request");
-    let add_five = CustomMenuItem::new("add_five".to_string(), "+5 Requests");
-    let reset = CustomMenuItem::new("reset".to_string(), "Reset quota");
     let quit = CustomMenuItem::new("quit".to_string(), "Quit");
 
     SystemTrayMenu::new()
         .add_item(show)
-        .add_native_item(SystemTrayMenuItem::Separator)
-        .add_item(add_one)
-        .add_item(add_five)
-        .add_native_item(SystemTrayMenuItem::Separator)
-        .add_item(reset)
         .add_native_item(SystemTrayMenuItem::Separator)
         .add_item(quit)
 }
@@ -1024,24 +1016,6 @@ fn handle_tray_event(app: &tauri::AppHandle, event: SystemTrayEvent) {
                     if let Some(w) = window {
                         w.show().ok();
                         w.set_focus().ok();
-                    }
-                }
-                "add_one" => {
-                    if let Some(w) = &window {
-                        let state = app.state::<Mutex<AppState>>();
-                        add_request(1, state, w.clone());
-                    }
-                }
-                "add_five" => {
-                    if let Some(w) = &window {
-                        let state = app.state::<Mutex<AppState>>();
-                        add_request(5, state, w.clone());
-                    }
-                }
-                "reset" => {
-                    if let Some(w) = &window {
-                        let state = app.state::<Mutex<AppState>>();
-                        reset_usage(state, w.clone());
                     }
                 }
                 "quit" => {
