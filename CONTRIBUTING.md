@@ -1,29 +1,71 @@
-# Contributing
+# Contributing to MeterAI
 
-## Important Notice
+Thank you for your interest in contributing to MeterAI! This document provides guidelines for contributing to the project.
 
-**This repository does not accept contributions.**
+## Code of Conduct
 
-MeterAI is proprietary software. The source code is made available solely for:
-- Transparency
-- Security auditing
-- Verification purposes
+Please be respectful and constructive in all interactions. We welcome contributors of all skill levels and backgrounds.
 
-## What This Means
+## How to Contribute
 
-- **Pull Requests**: Will not be reviewed or merged
-- **Feature Requests**: May be submitted as issues, but implementation is at the author's discretion
-- **Bug Reports**: Welcome via [GitHub Issues](https://github.com/PopeYeahWine/MeterAI/issues)
-- **Forks**: Not permitted for any purpose other than viewing the source code
+### Reporting Bugs
 
-## Security Issues
+1. Check if the issue already exists in [GitHub Issues](https://github.com/PopeYeahWine/MeterAI/issues)
+2. If not, create a new issue with:
+   - Clear description of the bug
+   - Steps to reproduce
+   - Expected vs actual behavior
+   - Your OS and MeterAI version
 
-For security vulnerabilities, please see [SECURITY.md](SECURITY.md).
+### Feature Requests
 
-## Licensing Inquiries
+Open an issue with the `enhancement` label describing:
+- The feature you'd like to see
+- Why it would be useful
+- Any implementation ideas you have
 
-For commercial licensing, partnerships, or other inquiries, please contact: [@PopeYeahWine](https://github.com/PopeYeahWine)
+### Pull Requests
 
----
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes
+4. Test thoroughly
+5. Commit with clear messages (`git commit -m 'Add amazing feature'`)
+6. Push to your fork (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
 
-**Copyright (c) 2026 HPSC - All Rights Reserved**
+### Development Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/PopeYeahWine/MeterAI.git
+cd MeterAI
+
+# Install dependencies
+npm install
+
+# Run in development mode
+npm run tauri:dev
+
+# Build for production
+npm run tauri:build
+```
+
+## Code Style
+
+- Follow existing code patterns
+- Use TypeScript for frontend code
+- Use Rust for Tauri backend code
+- Keep commits focused and atomic
+
+## Code Signing
+
+Official releases are signed via [SignPath Foundation](https://signpath.org). Only maintainer-approved builds from GitHub Actions are signed.
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the GPL-3.0-or-later license.
+
+## Questions?
+
+Feel free to open an issue or reach out to [@PopeYeahWine](https://github.com/PopeYeahWine).

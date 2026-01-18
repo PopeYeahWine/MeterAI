@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/PopeYeahWine/MeterAI/releases"><img src="https://img.shields.io/github/v/release/PopeYeahWine/MeterAI?style=flat-square&color=22F0B6" alt="Release"></a>
-  <a href="https://github.com/PopeYeahWine/MeterAI/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-proprietary-blue?style=flat-square" alt="License"></a>
+  <a href="https://github.com/PopeYeahWine/MeterAI/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue?style=flat-square" alt="License"></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="Platform">
 </p>
 
@@ -210,9 +210,10 @@ Have a feature request? [Open an issue](https://github.com/PopeYeahWine/MeterAI/
 
 ## Contributing
 
-While MeterAI is source-available, we welcome:
+MeterAI is open source under GPL-3.0-or-later. We welcome:
 - Bug reports via [GitHub Issues](https://github.com/PopeYeahWine/MeterAI/issues)
 - Feature suggestions and feedback
+- Pull requests (see [CONTRIBUTING.md](CONTRIBUTING.md))
 - Security vulnerability reports (see [SECURITY.md](SECURITY.md))
 
 ---
@@ -227,12 +228,27 @@ If MeterAI helps you stay productive, consider supporting development:
 
 ---
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+### Team roles
+
+- **Committers and reviewers:** [@PopeYeahWine](https://github.com/PopeYeahWine)
+- **Approvers:** [@PopeYeahWine](https://github.com/PopeYeahWine)
+
+### Privacy policy
+
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+
+---
+
 ## License
 
-This software is **proprietary and source-available** (not open source).
+This software is licensed under the **GNU General Public License v3.0 or later** (GPL-3.0-or-later).
 
-The source code is provided for transparency and security auditing purposes only. See [LICENSE](LICENSE) for full terms.
+You are free to use, modify, and distribute this software under the terms of the GPL. See [LICENSE](LICENSE) for full terms.
 
-**Copyright (c) 2026 HPSC — All Rights Reserved**
+**Copyright (c) 2026 HPSC**
 
-For licensing inquiries: [@PopeYeahWine](https://github.com/PopeYeahWine)
+For inquiries: [@PopeYeahWine](https://github.com/PopeYeahWine)
