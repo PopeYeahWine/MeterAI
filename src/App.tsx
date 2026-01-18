@@ -15,7 +15,9 @@ import usdcLogo from './assets/crypto/usdc.png'
 import usdtLogo from './assets/crypto/usdt.png'
 import usd1Logo from './assets/crypto/usd1.svg'
 
-const APP_VERSION = '1.1.1'
+// Version injected at build time from package.json via vite.config.ts
+declare const __APP_VERSION__: string
+const APP_VERSION = __APP_VERSION__
 const GITHUB_REPO = 'PopeYeahWine/MeterAI'
 const GITHUB_USERNAME = 'PopeYeahWine'
 
