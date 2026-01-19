@@ -635,7 +635,7 @@ function App() {
     localStorage.setItem('enabledProviders', JSON.stringify(enabledProviders))
   }, [enabledProviders])
 
-  // Load data on startup
+  // Load data on startup and show window when ready
   useEffect(() => {
     const loadData = async () => {
       try {
@@ -645,6 +645,9 @@ function App() {
         setProviders(providersList)
         const active = await invoke<string>('get_active_provider')
         setActiveProvider(active)
+
+        // Show window once data is loaded (window starts hidden to prevent grey flash)
+        await appWindow.show()
 
         // Check if Claude Code token is available
         try {
@@ -714,6 +717,8 @@ function App() {
         setProvidersUsage(prev => ({ ...prev, ...allUsage }))
       } catch (e) {
         console.log('Backend not ready, using defaults')
+        // Still show window even if data loading fails
+        await appWindow.show()
       }
     }
     loadData()
