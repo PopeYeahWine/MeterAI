@@ -774,14 +774,20 @@ function App() {
   // Refresh Claude Code usage function - can be called manually or by interval
   const refreshClaudeCodeUsage = useCallback(async () => {
     try {
-      // First check if token is still available
-      const hasToken = await invoke<boolean>('has_claude_code_token')
-      // Only update state if value changed to avoid unnecessary re-renders
-      setHasClaudeCodeToken(prev => prev !== hasToken ? hasToken : prev)
+      // Skip token check if Claude provider is already enabled and we have a valid config
+      // This avoids re-reading the credentials file every 2 minutes
+      const claudeEnabled = enabledProviders['claude-pro-max']
+      const hasValidConfig = configStatus.detected
 
-      if (!hasToken) {
-        console.log('MeterAI: No Claude Code token available')
-        return
+      if (!claudeEnabled || !hasValidConfig) {
+        // Only check token if Claude is not enabled or config not detected
+        const hasToken = await invoke<boolean>('has_claude_code_token')
+        setHasClaudeCodeToken(prev => prev !== hasToken ? hasToken : prev)
+
+        if (!hasToken) {
+          console.log('MeterAI: No Claude Code token available')
+          return
+        }
       }
 
       console.log('MeterAI: Refreshing Claude Code usage...')
@@ -822,7 +828,7 @@ function App() {
     } catch (e) {
       console.log('MeterAI: Failed to refresh usage:', e)
     }
-  }, [])
+  }, [enabledProviders, configStatus.detected])
 
   // Auto-refresh Claude Code usage every 2 minutes
   useEffect(() => {
