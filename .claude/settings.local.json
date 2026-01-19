@@ -79,7 +79,11 @@
       "Bash(gh workflow:*)",
       "Bash(gh release list:*)",
       "Bash(git remote:*)",
-      "Bash(npm run version:patch:*)"
+      "Bash(npm run version:patch:*)",
+      "Bash(reg delete \"HKEY_CURRENT_USER\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\" /v MeterAI /f)",
+      "Bash(reg delete \"HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\" /v MeterAI /f)",
+      "Bash(cmd /c \"reg delete HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run /v MeterAI /f\")",
+      "Bash(reg query \"HKEY_CURRENT_USER\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\" /v MeterAI)"
     ]
   }
 }
