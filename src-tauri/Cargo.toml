@@ -1,6 +1,6 @@
 [package]
 name = "meter-ai"
-version = "1.1.5"
+version = "1.2.0"
 description = "Multi-provider AI usage tracker - Monitor your Claude, OpenAI, and other AI API usage"
 authors = ["MeterAI"]
 license = "GPL-3.0-or-later"
@@ -11,7 +11,7 @@ edition = "2021"
 tauri-build = { version = "1.5", features = [] }
 
 [dependencies]
-tauri = { version = "1.5", features = [ "http-request", "process-all", "notification-all", "shell-open", "system-tray", "window-all", "dialog-open"] }
+tauri = { version = "1.5", features = [ "os-all", "http-request", "process-all", "notification-all", "shell-open", "system-tray", "window-all", "dialog-open"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
@@ -21,6 +21,8 @@ dirs = "5"
 reqwest = { version = "0.11", features = ["json", "native-tls"] }
 keyring = "2"
 thiserror = "1.0"
+sha2 = "0.10"
+hex = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

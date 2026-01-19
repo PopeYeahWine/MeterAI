@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { listen } from '@tauri-apps/api/event'
-import { appWindow, LogicalSize } from '@tauri-apps/api/window'
+import { appWindow, LogicalSize, LogicalPosition, currentMonitor } from '@tauri-apps/api/window'
 import { exit } from '@tauri-apps/api/process'
 import { shell } from '@tauri-apps/api'
 import { fetch } from '@tauri-apps/api/http'
 import { platform } from '@tauri-apps/api/os'
-import { AI_PROVIDERS, CATEGORY_INFO, type ProviderCategory, type ProviderDefinition } from './providers'
+import { AI_PROVIDERS, CATEGORY_INFO, TRACKING_STATUS_INFO, type ProviderCategory, type ProviderDefinition, type TrackingStatus } from './providers'
 
 // Crypto logos
 import btcLogo from './assets/crypto/btc.png'
@@ -83,6 +83,49 @@ interface ClaudeCodeUsageResult {
   five_hour_reset: string | null
   seven_day_percent: number | null
   seven_day_reset: string | null
+  subscription_type: string | null // "pro", "max", etc.
+}
+
+// Cache for Claude usage when VS Code stops refreshing
+interface ClaudeUsageCache {
+  lastKnownUsage: ClaudeCodeUsageResult
+  lastKnownAt: number // timestamp when data was received
+  isStale: boolean // true if data might be outdated
+}
+
+interface OpenAIUsageResult {
+  success: boolean
+  error: string | null
+  usage_usd: number | null
+  limit_usd: number | null
+  percent: number | null
+  is_pay_as_you_go: boolean
+  daily_usage: Array<{ date: string; cost_usd: number }>
+}
+
+// Token management types
+interface TokenStatus {
+  has_internal_token: boolean
+  token_preview: string | null
+  token_hash: string | null
+  copied_at: string | null
+  expires_at: string | null
+  source: string
+  source_differs: boolean
+  source_hash: string | null
+}
+
+interface TokenChangeEntry {
+  timestamp: string
+  changed: boolean
+  old_hash: string | null
+  new_hash: string | null
+  source: string
+}
+
+interface TokenHistory {
+  entries: TokenChangeEntry[]
+  last_check: string | null
 }
 
 type ViewMode = 'compact' | 'expanded' | 'settings'
@@ -163,6 +206,10 @@ interface ProviderSettingsPanelProps {
   setHasClaudeCodeToken: React.Dispatch<React.SetStateAction<boolean>>
   setEnabledProviders: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
   refreshClaudeCodeUsage: () => Promise<void>
+  tokenStatus: TokenStatus | null
+  setTokenStatus: React.Dispatch<React.SetStateAction<TokenStatus | null>>
+  customProviderNames: Record<string, string>
+  setCustomProviderNames: React.Dispatch<React.SetStateAction<Record<string, string>>>
 }
 
 const ProviderSettingsPanel = ({
@@ -176,15 +223,53 @@ const ProviderSettingsPanel = ({
   setConfigStatus,
   setHasClaudeCodeToken,
   setEnabledProviders,
-  refreshClaudeCodeUsage
+  refreshClaudeCodeUsage,
+  tokenStatus,
+  setTokenStatus,
+  customProviderNames,
+  setCustomProviderNames
 }: ProviderSettingsPanelProps) => {
   // Local accordion states - stable because component is not recreated
   const [usageThresholdsOpen, setUsageThresholdsOpen] = useState(false)
   const [timeThresholdsOpen, setTimeThresholdsOpen] = useState(false)
+  const [tokenManagementOpen, setTokenManagementOpen] = useState(false)
+  const [tokenHistoryOpen, setTokenHistoryOpen] = useState(false)
+  const [tokenHistory, setTokenHistory] = useState<TokenHistory | null>(null)
+  const [tokenActionMessage, setTokenActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  // OpenAI API states
+  const [openaiApiKey, setOpenaiApiKey] = useState('')
+  const [openaiHasKey, setOpenaiHasKey] = useState(false)
+  const [openaiKeyPreview, setOpenaiKeyPreview] = useState<string | null>(null)
+  const [openaiSaveMessage, setOpenaiSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [openaiKeyVisible, setOpenaiKeyVisible] = useState(false)
 
+  // Compute values needed for useEffect BEFORE any conditional returns
+  const isOpenAIProvider = providerId === 'openai-api'
+  const providerDef = providerId ? AI_PROVIDERS.find(p => p.id === providerId) : null
+
+  // Check OpenAI key status when opening panel - MUST be before any conditional returns
+  useEffect(() => {
+    const checkKey = async () => {
+      if (isOpenAIProvider) {
+        try {
+          const hasKey = await invoke<boolean>('has_openai_api_key')
+          setOpenaiHasKey(hasKey)
+          if (hasKey) {
+            const preview = await invoke<string | null>('get_openai_api_key_preview')
+            setOpenaiKeyPreview(preview)
+          } else {
+            setOpenaiKeyPreview(null)
+          }
+        } catch (e) {
+          console.error('Failed to check OpenAI API key:', e)
+        }
+      }
+    }
+    checkKey()
+  }, [isOpenAIProvider])
+
+  // Early returns AFTER all hooks
   if (!providerId) return null
-
-  const providerDef = AI_PROVIDERS.find(p => p.id === providerId)
   if (!providerDef) return null
 
   const thresholds = providerThresholds[providerId] || { green: 70, yellow: 85, orange: 95, red: 100 }
@@ -291,6 +376,134 @@ const ProviderSettingsPanel = ({
 
   const detectedPath = getDetectedPath()
 
+  // Token management handlers (only for Claude provider)
+  const isClaudeProvider = providerId === 'claude-pro-max'
+
+  const refreshTokenStatus = async () => {
+    if (!isClaudeProvider) return
+    try {
+      const status = await invoke<TokenStatus>('get_token_status')
+      setTokenStatus(status)
+    } catch (e) {
+      console.error('Failed to get token status:', e)
+    }
+  }
+
+  const handleCopyTokenInternal = async () => {
+    try {
+      await invoke('copy_token_to_internal')
+      setTokenActionMessage({ type: 'success', text: 'Token copied to internal storage' })
+      await refreshTokenStatus()
+      setTimeout(() => setTokenActionMessage(null), 3000)
+    } catch (e) {
+      setTokenActionMessage({ type: 'error', text: `Failed: ${e}` })
+      setTimeout(() => setTokenActionMessage(null), 5000)
+    }
+  }
+
+  const handleExportToken = async () => {
+    try {
+      const data = await invoke<string>('export_token_data')
+      // Use clipboard to copy export data
+      await navigator.clipboard.writeText(data)
+      setTokenActionMessage({ type: 'success', text: 'Token data copied to clipboard' })
+      setTimeout(() => setTokenActionMessage(null), 3000)
+    } catch (e) {
+      setTokenActionMessage({ type: 'error', text: `Export failed: ${e}` })
+      setTimeout(() => setTokenActionMessage(null), 5000)
+    }
+  }
+
+  const handleImportToken = async () => {
+    try {
+      const data = await navigator.clipboard.readText()
+      if (!data.trim()) {
+        setTokenActionMessage({ type: 'error', text: 'Clipboard is empty' })
+        setTimeout(() => setTokenActionMessage(null), 3000)
+        return
+      }
+      await invoke('import_token_data', { data })
+      setTokenActionMessage({ type: 'success', text: 'Token imported successfully' })
+      await refreshTokenStatus()
+      setTimeout(() => setTokenActionMessage(null), 3000)
+    } catch (e) {
+      setTokenActionMessage({ type: 'error', text: `Import failed: ${e}` })
+      setTimeout(() => setTokenActionMessage(null), 5000)
+    }
+  }
+
+  const handleClearInternalToken = async () => {
+    try {
+      await invoke('clear_internal_token')
+      setTokenActionMessage({ type: 'success', text: 'Internal token cleared' })
+      await refreshTokenStatus()
+      setTimeout(() => setTokenActionMessage(null), 3000)
+    } catch (e) {
+      setTokenActionMessage({ type: 'error', text: `Failed: ${e}` })
+      setTimeout(() => setTokenActionMessage(null), 5000)
+    }
+  }
+
+  const loadTokenHistory = async () => {
+    if (!isClaudeProvider) return
+    try {
+      // First, check for token changes (this records the change in history if detected)
+      await invoke('check_token_change').catch(() => {})
+      // Then load the updated history
+      const history = await invoke<TokenHistory>('get_token_history')
+      setTokenHistory(history)
+    } catch (e) {
+      console.error('Failed to load token history:', e)
+    }
+  }
+
+  const formatTimestamp = (ts: string) => {
+    const date = new Date(ts)
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  }
+
+  // OpenAI API handlers
+  const handleSaveOpenAIKey = async () => {
+    if (!openaiApiKey.trim()) {
+      setOpenaiSaveMessage({ type: 'error', text: 'Please enter an API key' })
+      setTimeout(() => setOpenaiSaveMessage(null), 3000)
+      return
+    }
+    try {
+      await invoke('save_openai_api_key', { apiKey: openaiApiKey })
+      setOpenaiSaveMessage({ type: 'success', text: 'API key saved successfully' })
+      setOpenaiHasKey(true)
+      setOpenaiApiKey('') // Clear input for security
+      setOpenaiKeyVisible(false)
+      // Enable the provider
+      setEnabledProviders(prev => ({ ...prev, 'openai-api': true }))
+      setTimeout(() => setOpenaiSaveMessage(null), 3000)
+    } catch (e) {
+      setOpenaiSaveMessage({ type: 'error', text: `Failed: ${e}` })
+      setTimeout(() => setOpenaiSaveMessage(null), 5000)
+    }
+  }
+
+  const handleRemoveOpenAIKey = async () => {
+    try {
+      await invoke('remove_openai_api_key')
+      setOpenaiSaveMessage({ type: 'success', text: 'API key removed' })
+      setOpenaiHasKey(false)
+      setOpenaiApiKey('')
+      // Disable the provider
+      setEnabledProviders(prev => ({ ...prev, 'openai-api': false }))
+      setTimeout(() => setOpenaiSaveMessage(null), 3000)
+    } catch (e) {
+      setOpenaiSaveMessage({ type: 'error', text: `Failed: ${e}` })
+      setTimeout(() => setOpenaiSaveMessage(null), 5000)
+    }
+  }
+
   return (
     <div className="provider-settings-overlay" onClick={onClose}>
       <div className="provider-settings-panel" onClick={e => e.stopPropagation()}>
@@ -311,26 +524,193 @@ const ProviderSettingsPanel = ({
           </button>
         </div>
 
+        {/* Display Name Section */}
+        <div className="provider-settings-section">
+          <h4 className="provider-settings-section-title">Display Name</h4>
+          <div className="custom-name-section">
+            <p className="custom-name-help">Customize the name shown in the banner</p>
+            <div className="custom-name-input-row">
+              <input
+                type="text"
+                className="custom-name-input"
+                placeholder={`${providerDef.brand} ${providerDef.name}`}
+                value={customProviderNames[providerId] || ''}
+                onChange={(e) => {
+                  const value = e.target.value
+                  setCustomProviderNames(prev => {
+                    if (value === '') {
+                      const { [providerId]: _, ...rest } = prev
+                      return rest
+                    }
+                    return { ...prev, [providerId]: value }
+                  })
+                }}
+              />
+              {customProviderNames[providerId] && (
+                <button
+                  className="custom-name-clear-btn"
+                  onClick={() => setCustomProviderNames(prev => {
+                    const { [providerId]: _, ...rest } = prev
+                    return rest
+                  })}
+                  title="Reset to default"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* Configuration Section */}
         <div className="provider-settings-section">
           <h4 className="provider-settings-section-title">Configuration</h4>
-          <div className="config-detection-box">
-            <div className="config-detection-status">
-              <span className={`config-detection-dot ${configStatus.detected ? 'detected' : 'not-detected'}`}></span>
-              <span className="config-detection-text">
-                {configStatus.detected ? (
-                  <>Credentials <strong>detected</strong></>
-                ) : (
-                  <>Credentials <strong>not found</strong></>
-                )}
-              </span>
-            </div>
-            {detectedPath && (
-              <div className="config-detection-path" title={detectedPath}>
-                {formatPath(detectedPath)}
+
+          {/* OpenAI API Key Configuration */}
+          {isOpenAIProvider ? (
+            <div className="config-detection-box">
+              <div className="config-detection-status">
+                <span className={`config-detection-dot ${openaiHasKey ? 'detected' : 'not-detected'}`}></span>
+                <span className="config-detection-text">
+                  {openaiHasKey ? (
+                    <>API Key <strong>configured</strong></>
+                  ) : (
+                    <>API Key <strong>not configured</strong></>
+                  )}
+                </span>
               </div>
-            )}
-          </div>
+
+              {/* API Key Input */}
+              <div className="openai-api-key-section">
+                {openaiHasKey ? (
+                  /* Key is configured - show preview */
+                  <>
+                    <div className="openai-api-key-configured">
+                      <div className="openai-key-preview">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+                        </svg>
+                        <span className="key-preview-text">
+                          {openaiKeyVisible ? openaiKeyPreview : '••••••••••...'}
+                        </span>
+                      </div>
+                      <button
+                        className="openai-key-visibility-btn"
+                        onClick={() => setOpenaiKeyVisible(!openaiKeyVisible)}
+                        title={openaiKeyVisible ? 'Hide preview' : 'Show preview'}
+                      >
+                        {openaiKeyVisible ? (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                            <line x1="1" y1="1" x2="23" y2="23"></line>
+                          </svg>
+                        ) : (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+                    <button
+                      className="openai-api-key-btn remove full-width"
+                      onClick={handleRemoveOpenAIKey}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M3 6h18"></path>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                      </svg>
+                      Remove API Key
+                    </button>
+                  </>
+                ) : (
+                  /* No key configured - show input */
+                  <>
+                    <div className="openai-api-key-input-wrapper">
+                      <input
+                        type={openaiKeyVisible ? 'text' : 'password'}
+                        className="openai-api-key-input"
+                        placeholder="sk-..."
+                        value={openaiApiKey}
+                        onChange={(e) => setOpenaiApiKey(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveOpenAIKey()
+                        }}
+                      />
+                      <button
+                        className="openai-key-visibility-btn"
+                        onClick={() => setOpenaiKeyVisible(!openaiKeyVisible)}
+                        title={openaiKeyVisible ? 'Hide key' : 'Show key'}
+                      >
+                        {openaiKeyVisible ? (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                            <line x1="1" y1="1" x2="23" y2="23"></line>
+                          </svg>
+                        ) : (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+
+                    <button
+                      className="openai-api-key-btn save full-width"
+                      onClick={handleSaveOpenAIKey}
+                      disabled={!openaiApiKey.trim()}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                        <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                        <polyline points="7 3 7 8 15 8"></polyline>
+                      </svg>
+                      Save API Key
+                    </button>
+
+                    <div className="openai-api-help">
+                      Get your API key from <a href="#" onClick={(e) => {
+                        e.preventDefault()
+                        import('@tauri-apps/api/shell').then(({ open }) => {
+                          open('https://platform.openai.com/api-keys')
+                        })
+                      }}>platform.openai.com/api-keys</a>
+                    </div>
+                  </>
+                )}
+
+                {/* Success/Error message */}
+                {openaiSaveMessage && (
+                  <div className={`openai-api-message ${openaiSaveMessage.type}`}>
+                    {openaiSaveMessage.text}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            /* Claude Credentials Detection */
+            <div className="config-detection-box">
+              <div className="config-detection-status">
+                <span className={`config-detection-dot ${configStatus.detected ? 'detected' : 'not-detected'}`}></span>
+                <span className="config-detection-text">
+                  {configStatus.detected ? (
+                    <>Credentials <strong>detected</strong></>
+                  ) : (
+                    <>Credentials <strong>not found</strong></>
+                  )}
+                </span>
+              </div>
+              {detectedPath && (
+                <div className="config-detection-path" title={detectedPath}>
+                  {formatPath(detectedPath)}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Usage Color Thresholds - Accordion */}
@@ -517,32 +897,217 @@ const ProviderSettingsPanel = ({
           )}
         </div>
 
-        {/* Actions */}
-        <div className="provider-settings-actions">
-          <div className="provider-settings-actions-row">
-            <button className="provider-settings-btn-action primary" onClick={handleRedetect}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M23 4v6h-6"></path>
-                <path d="M1 20v-6h6"></path>
-                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+        {/* Token Management - Only for Claude provider */}
+        {isClaudeProvider && (
+          <div className="provider-settings-accordion">
+            <div
+              className={`accordion-header ${tokenManagementOpen ? 'open' : ''}`}
+              onClick={() => {
+                if (!tokenManagementOpen) refreshTokenStatus()
+                setTokenManagementOpen(!tokenManagementOpen)
+              }}
+            >
+              <svg
+                className={`accordion-chevron ${tokenManagementOpen ? 'open' : ''}`}
+                width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+              >
+                <polyline points="9,18 15,12 9,6"></polyline>
               </svg>
-              Re-detect
-            </button>
-            <button className="provider-settings-btn-action secondary" onClick={handleBrowseCredentials}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+              <span className="accordion-title">Token Storage</span>
+              {!tokenManagementOpen && tokenStatus?.has_internal_token && (
+                <span className="accordion-badge stored">Stored</span>
+              )}
+            </div>
+            {tokenManagementOpen && (
+              <div className="accordion-content">
+                {/* Token Status */}
+                <div className="token-status-box">
+                  <div className="token-status-row">
+                    <span className="token-status-label">Internal Token</span>
+                    <span className={`token-status-value ${tokenStatus?.has_internal_token ? 'active' : 'inactive'}`}>
+                      {tokenStatus?.has_internal_token ? 'Stored' : 'Not stored'}
+                    </span>
+                  </div>
+                  {tokenStatus?.has_internal_token && (
+                    <>
+                      <div className="token-status-row">
+                        <span className="token-status-label">Preview</span>
+                        <span className="token-preview-text">{tokenStatus.token_preview}</span>
+                      </div>
+                      <div className="token-status-row">
+                        <span className="token-status-label">Hash</span>
+                        <span className="token-hash-text">{tokenStatus.token_hash}</span>
+                      </div>
+                      {tokenStatus.copied_at && (
+                        <div className="token-status-row">
+                          <span className="token-status-label">Copied</span>
+                          <span className="token-date-text">{formatTimestamp(tokenStatus.copied_at)}</span>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {tokenStatus?.source_differs && (
+                    <div className="token-warning-box">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                        <line x1="12" y1="9" x2="12" y2="13"></line>
+                        <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                      </svg>
+                      <span>Source token differs from stored (hash: {tokenStatus.source_hash?.slice(0, 8)}...)</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Action message */}
+                {tokenActionMessage && (
+                  <div className={`token-action-message ${tokenActionMessage.type}`}>
+                    {tokenActionMessage.text}
+                  </div>
+                )}
+
+                {/* Token Actions */}
+                <div className="token-actions-grid">
+                  <button
+                    className="token-action-btn primary"
+                    onClick={handleCopyTokenInternal}
+                    disabled={!configStatus.detected}
+                    title={configStatus.detected ? 'Copy Claude Code token to internal storage' : 'No source token detected'}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                    {tokenStatus?.has_internal_token ? 'Update' : 'Copy'} to Storage
+                  </button>
+                  <button
+                    className="token-action-btn secondary"
+                    onClick={handleExportToken}
+                    disabled={!tokenStatus?.has_internal_token}
+                    title="Export token to clipboard (for use on another PC)"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                      <polyline points="17 8 12 3 7 8"></polyline>
+                      <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                    Export
+                  </button>
+                  <button
+                    className="token-action-btn secondary"
+                    onClick={handleImportToken}
+                    title="Import token from clipboard"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                      <polyline points="7 10 12 15 17 10"></polyline>
+                      <line x1="12" y1="15" x2="12" y2="3"></line>
+                    </svg>
+                    Import
+                  </button>
+                  <button
+                    className="token-action-btn danger"
+                    onClick={handleClearInternalToken}
+                    disabled={!tokenStatus?.has_internal_token}
+                    title="Clear stored token"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M3 6h18"></path>
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                    </svg>
+                    Clear
+                  </button>
+                </div>
+
+                <div className="token-help-text">
+                  Store the token internally to keep MeterAI working even without Claude Code installed.
+                  Export to transfer to another computer.
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Token History - Only for Claude provider */}
+        {isClaudeProvider && (
+          <div className="provider-settings-accordion">
+            <div
+              className={`accordion-header ${tokenHistoryOpen ? 'open' : ''}`}
+              onClick={() => {
+                if (!tokenHistoryOpen) loadTokenHistory()
+                setTokenHistoryOpen(!tokenHistoryOpen)
+              }}
+            >
+              <svg
+                className={`accordion-chevron ${tokenHistoryOpen ? 'open' : ''}`}
+                width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+              >
+                <polyline points="9,18 15,12 9,6"></polyline>
               </svg>
-              Browse...
+              <span className="accordion-title">Token History</span>
+              {!tokenHistoryOpen && tokenHistory && tokenHistory.entries.length > 0 && (
+                <span className="accordion-badge">{tokenHistory.entries.length}</span>
+              )}
+            </div>
+            {tokenHistoryOpen && (
+              <div className="accordion-content">
+                {tokenHistory && tokenHistory.entries.length > 0 ? (
+                  <div className="token-history-list">
+                    {tokenHistory.entries.slice(0, 10).map((entry, i) => (
+                      <div key={i} className={`token-history-entry ${entry.changed ? 'changed' : 'same'}`}>
+                        <div className="token-history-time">{formatTimestamp(entry.timestamp)}</div>
+                        <div className="token-history-status">
+                          {entry.changed ? (
+                            <>
+                              <span className="token-history-badge changed">Changed</span>
+                              <span className="token-history-hash">{entry.old_hash?.slice(0, 6)} → {entry.new_hash?.slice(0, 6)}</span>
+                            </>
+                          ) : (
+                            <span className="token-history-badge same">No change</span>
+                          )}
+                        </div>
+                        <div className="token-history-source">{entry.source}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="token-history-empty">
+                    No token changes recorded yet.
+                    Changes are tracked when you copy or update the internal token.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Actions - Claude specific */}
+        {isClaudeProvider && (
+          <div className="provider-settings-actions">
+            <div className="provider-settings-actions-row">
+              <button className="provider-settings-btn-action primary" onClick={handleRedetect}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M23 4v6h-6"></path>
+                  <path d="M1 20v-6h6"></path>
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                </svg>
+                Re-detect
+              </button>
+              <button className="provider-settings-btn-action secondary" onClick={handleBrowseCredentials}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                </svg>
+                Browse...
+              </button>
+            </div>
+            <button className="provider-settings-btn-action danger" onClick={handleResetConfig}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M3 6h18"></path>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg>
+              Reset config
             </button>
           </div>
-          <button className="provider-settings-btn-action danger" onClick={handleResetConfig}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M3 6h18"></path>
-              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-            </svg>
-            Reset config
-          </button>
-        </div>
+        )}
       </div>
     </div>
   )
@@ -566,17 +1131,41 @@ function App() {
   const [editingProvider, setEditingProvider] = useState<string | null>(null)
   const [refreshingProvider, setRefreshingProvider] = useState<string | null>(null)
   const [claudeCodeUsage, setClaudeCodeUsage] = useState<ClaudeCodeUsageResult | null>(null)
+  const [claudeUsageCache, setClaudeUsageCache] = useState<ClaudeUsageCache | null>(() => {
+    // Load cache from localStorage on startup
+    try {
+      const cached = localStorage.getItem('claudeUsageCache')
+      if (cached) {
+        const parsed = JSON.parse(cached) as ClaudeUsageCache
+        // Mark as stale if older than 5 minutes
+        const ageMs = Date.now() - parsed.lastKnownAt
+        return { ...parsed, isStale: ageMs > 5 * 60 * 1000 }
+      }
+    } catch { /* ignore */ }
+    return null
+  })
   const [hasClaudeCodeToken, setHasClaudeCodeToken] = useState(false)
+  const [openaiUsage, setOpenaiUsage] = useState<OpenAIUsageResult | null>(null)
+  const [hasOpenaiApiKey, setHasOpenaiApiKey] = useState(false)
   const [showClaudeDetectedPopup, setShowClaudeDetectedPopup] = useState(false)
   const [claudeDetectedDismissed, setClaudeDetectedDismissed] = useState(false)
-  const [categoryFilter, setCategoryFilter] = useState<ProviderCategory | 'all'>('all')
+  const [categoryFilter, setCategoryFilter] = useState<ProviderCategory | 'all' | 'available'>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [isCollapsing, setIsCollapsing] = useState(false)
+  const [hasAnimatedExpand, setHasAnimatedExpand] = useState(false)
   const [showAbout, setShowAbout] = useState(false)
   const [updateAvailable, setUpdateAvailable] = useState<string | null>(null)
   const [lastUpdateCheck, setLastUpdateCheck] = useState<number>(0)
   // Settings states
   const [autostartEnabled, setAutostartEnabled] = useState(false)
+  const [notifyUpdateEnabled, setNotifyUpdateEnabled] = useState(() => {
+    // Default to true - user can disable if they don't want tray notifications
+    const saved = localStorage.getItem('notifyUpdateEnabled')
+    return saved === null ? true : saved === 'true'
+  })
+  const [savePositionEnabled, setSavePositionEnabled] = useState(() => {
+    return localStorage.getItem('savePositionEnabled') === 'true'
+  })
   const [configStatus, setConfigStatus] = useState<{
     detected: boolean;
     source: string;
@@ -590,8 +1179,19 @@ function App() {
   const [providerTimeThresholds, setProviderTimeThresholds] = useState<Record<string, { red: number; orange: number; yellow: number; blue: number }>>({
     'claude-pro-max': { red: 20, orange: 40, yellow: 70, blue: 100 }
   })
+  // Custom display names for providers in the banner
+  const [customProviderNames, setCustomProviderNames] = useState<Record<string, string>>(() => {
+    const saved = localStorage.getItem('customProviderNames')
+    return saved ? JSON.parse(saved) : {}
+  })
+  // Persist custom names to localStorage
+  useEffect(() => {
+    localStorage.setItem('customProviderNames', JSON.stringify(customProviderNames))
+  }, [customProviderNames])
   // Note: accordion states moved inside ProviderSettingsPanel to prevent flicker
   const [detectedCredentialPaths, setDetectedCredentialPaths] = useState<string[]>([])
+  // Token management state
+  const [tokenStatus, setTokenStatus] = useState<TokenStatus | null>(null)
   // Collapsed state for categories - coding is open by default
   const [collapsedCategories, setCollapsedCategories] = useState<Record<ProviderCategory, boolean>>({
     coding: false, // Open by default
@@ -646,6 +1246,21 @@ function App() {
         const active = await invoke<string>('get_active_provider')
         setActiveProvider(active)
 
+        // Position window before showing - always use default centered position
+        // Note: Save position feature disabled due to issues with invalid coordinates
+        try {
+          const monitor = await currentMonitor()
+          if (monitor) {
+            // Default: center horizontally at top
+            const screenWidth = monitor.size.width / monitor.scaleFactor
+            const windowWidth = 520
+            const x = Math.round((screenWidth - windowWidth) / 2)
+            await appWindow.setPosition(new LogicalPosition(x, 1))
+          }
+        } catch (e) {
+          console.log('Failed to set window position:', e)
+        }
+
         // Show window once data is loaded (window starts hidden to prevent grey flash)
         await appWindow.show()
 
@@ -657,10 +1272,22 @@ function App() {
           // If token available, fetch Claude Code usage
           if (hasToken) {
             const ccUsage = await invoke<ClaudeCodeUsageResult>('get_claude_code_usage')
-            setClaudeCodeUsage(ccUsage)
 
-            // Update Claude provider with real data if successful
-            if (ccUsage.success && ccUsage.five_hour_percent !== null) {
+            // Check if we got valid data or if VS Code is stuck on "loading usage data"
+            const hasValidData = ccUsage.success && ccUsage.five_hour_percent !== null
+
+            if (hasValidData) {
+              // Valid data received - update state and cache
+              setClaudeCodeUsage(ccUsage)
+              const newCache: ClaudeUsageCache = {
+                lastKnownUsage: ccUsage,
+                lastKnownAt: Date.now(),
+                isStale: false
+              }
+              setClaudeUsageCache(newCache)
+              localStorage.setItem('claudeUsageCache', JSON.stringify(newCache))
+              console.log('MeterAI: Claude usage updated and cached:', ccUsage.five_hour_percent + '%')
+
               setProvidersUsage(prev => ({
                 ...prev,
                 'claude-pro-max': {
@@ -675,6 +1302,36 @@ function App() {
               const claudeAlreadyEnabled = enabledProviders['claude-pro-max']
               if (!storedDismissed && !claudeAlreadyEnabled) {
                 setShowClaudeDetectedPopup(true)
+              }
+            } else {
+              // No valid data (VS Code stuck on "loading usage data" or error)
+              // Use cached data if available, mark as stale
+              console.log('MeterAI: No valid Claude data received, using cache if available')
+              const cached = localStorage.getItem('claudeUsageCache')
+              if (cached) {
+                try {
+                  const parsedCache = JSON.parse(cached) as ClaudeUsageCache
+                  const ageMs = Date.now() - parsedCache.lastKnownAt
+                  const ageMinutes = Math.round(ageMs / 60000)
+                  console.log(`MeterAI: Using cached data from ${ageMinutes} minutes ago`)
+
+                  // Mark as stale and use cached data
+                  parsedCache.isStale = true
+                  setClaudeUsageCache(parsedCache)
+                  setClaudeCodeUsage(parsedCache.lastKnownUsage)
+
+                  // Update providers with cached data (NOT 100%!)
+                  if (parsedCache.lastKnownUsage.five_hour_percent !== null) {
+                    setProvidersUsage(prev => ({
+                      ...prev,
+                      'claude-pro-max': {
+                        used: Math.round(parsedCache.lastKnownUsage.five_hour_percent || 0),
+                        limit: 100,
+                        percent: Math.round(parsedCache.lastKnownUsage.five_hour_percent || 0)
+                      }
+                    }))
+                  }
+                } catch { /* ignore parse error */ }
               }
             }
           }
@@ -793,23 +1450,34 @@ function App() {
       console.log('MeterAI: Refreshing Claude Code usage...')
       const ccUsage = await invoke<ClaudeCodeUsageResult>('get_claude_code_usage')
 
-      // Only update if data is different to minimize re-renders
-      setClaudeCodeUsage(prev => {
-        if (!prev || prev.five_hour_percent !== ccUsage.five_hour_percent ||
-            prev.five_hour_reset !== ccUsage.five_hour_reset ||
-            prev.seven_day_percent !== ccUsage.seven_day_percent) {
-          return ccUsage
-        }
-        return prev
-      })
+      // Check if we got valid data
+      const hasValidData = ccUsage.success && ccUsage.five_hour_percent !== null
 
-      if (ccUsage.success) {
+      if (hasValidData) {
+        // Valid data - update state and cache
+        setClaudeCodeUsage(prev => {
+          if (!prev || prev.five_hour_percent !== ccUsage.five_hour_percent ||
+              prev.five_hour_reset !== ccUsage.five_hour_reset ||
+              prev.seven_day_percent !== ccUsage.seven_day_percent) {
+            return ccUsage
+          }
+          return prev
+        })
+
+        // Update cache
+        const newCache: ClaudeUsageCache = {
+          lastKnownUsage: ccUsage,
+          lastKnownAt: Date.now(),
+          isStale: false
+        }
+        setClaudeUsageCache(newCache)
+        localStorage.setItem('claudeUsageCache', JSON.stringify(newCache))
+
         const percent = ccUsage.five_hour_percent ?? 0
         console.log(`MeterAI: Usage updated - 5h: ${percent}%, reset: ${ccUsage.five_hour_reset}`)
         setProvidersUsage(prev => {
           const current = prev['claude-pro-max']
           const newPercent = Math.round(percent)
-          // Only update if changed
           if (!current || current.percent !== newPercent) {
             return {
               ...prev,
@@ -823,10 +1491,38 @@ function App() {
           return prev
         })
       } else {
-        console.log('MeterAI: Usage fetch returned success=false')
+        // No valid data - VS Code might be stuck on "loading usage data"
+        // Use cached data and mark as stale, but DON'T reset to 100%
+        console.log('MeterAI: No valid data received - VS Code might be paused or stuck')
+
+        setClaudeUsageCache(prev => {
+          if (prev) {
+            const ageMs = Date.now() - prev.lastKnownAt
+            const ageMinutes = Math.round(ageMs / 60000)
+            console.log(`MeterAI: Using cached data from ${ageMinutes} min ago (marking stale)`)
+
+            // If we have cached reset time, check if it has passed
+            if (prev.lastKnownUsage.five_hour_reset) {
+              const resetTime = new Date(prev.lastKnownUsage.five_hour_reset).getTime()
+              const now = Date.now()
+              if (now > resetTime) {
+                console.log('MeterAI: Cached reset time has passed - usage might have reset')
+                // Don't assume 100% available, just mark as very stale
+              }
+            }
+
+            return { ...prev, isStale: true }
+          }
+          return prev
+        })
+
+        // Keep using the last known usage, don't change to 100%
+        // The UI will show "stale" indicator based on claudeUsageCache.isStale
       }
     } catch (e) {
       console.log('MeterAI: Failed to refresh usage:', e)
+      // On error, mark cache as stale but keep using it
+      setClaudeUsageCache(prev => prev ? { ...prev, isStale: true } : prev)
     }
   }, [enabledProviders, configStatus.detected])
 
@@ -853,6 +1549,74 @@ function App() {
       clearInterval(refreshInterval)
     }
   }, [refreshClaudeCodeUsage])
+
+  // Refresh OpenAI usage function
+  const refreshOpenAIUsage = useCallback(async () => {
+    try {
+      const openaiEnabled = enabledProviders['openai-api']
+
+      // Check if we have an API key
+      const hasKey = await invoke<boolean>('has_openai_api_key')
+      setHasOpenaiApiKey(prev => prev !== hasKey ? hasKey : prev)
+
+      if (!openaiEnabled || !hasKey) {
+        return
+      }
+
+      console.log('MeterAI: Refreshing OpenAI API usage...')
+      const result = await invoke<OpenAIUsageResult>('get_openai_api_usage')
+
+      setOpenaiUsage(prev => {
+        if (!prev || prev.percent !== result.percent ||
+            prev.usage_usd !== result.usage_usd) {
+          return result
+        }
+        return prev
+      })
+
+      if (result.success) {
+        const percent = result.percent ?? 0
+        console.log(`MeterAI: OpenAI usage updated - ${percent}% ($${result.usage_usd?.toFixed(2)} / $${result.limit_usd?.toFixed(2)})`)
+        setProvidersUsage(prev => {
+          const current = prev['openai-api']
+          const newPercent = Math.round(percent)
+          if (!current || current.percent !== newPercent) {
+            return {
+              ...prev,
+              'openai-api': {
+                used: newPercent,
+                limit: 100,
+                percent: newPercent
+              }
+            }
+          }
+          return prev
+        })
+      } else {
+        console.log('MeterAI: OpenAI usage fetch returned success=false:', result.error)
+      }
+    } catch (e) {
+      console.log('MeterAI: Failed to refresh OpenAI usage:', e)
+    }
+  }, [enabledProviders])
+
+  // Auto-refresh OpenAI usage every 5 minutes
+  useEffect(() => {
+    const POLL_INTERVAL = 5 * 60 * 1000 // 5 minutes (less frequent than Claude)
+
+    const initialRefresh = setTimeout(() => {
+      refreshOpenAIUsage()
+    }, 6000) // 6 second delay (staggered from Claude refresh)
+
+    const refreshInterval = setInterval(() => {
+      refreshOpenAIUsage()
+    }, POLL_INTERVAL)
+
+    return () => {
+      clearTimeout(initialRefresh)
+      clearInterval(refreshInterval)
+    }
+  }, [refreshOpenAIUsage])
 
   const addRequest = useCallback(async (count: number = 1) => {
     try {
@@ -1001,14 +1765,37 @@ function App() {
     }
   }, [])
 
+  // Save window position when moved (if save position is enabled)
+  useEffect(() => {
+    let unlistenMove: (() => void) | null = null
+
+    const setupMoveListener = async () => {
+      unlistenMove = await appWindow.onMoved(async ({ payload: position }) => {
+        if (savePositionEnabled) {
+          localStorage.setItem('windowPosition', JSON.stringify({ x: position.x, y: position.y }))
+        }
+      })
+    }
+
+    setupMoveListener()
+
+    return () => {
+      if (unlistenMove) unlistenMove()
+    }
+  }, [savePositionEnabled])
+
   const toggleExpand = useCallback(async () => {
     const newMode = viewMode === 'compact' ? 'expanded' : 'compact'
     console.log('Toggle expand: switching from', viewMode, 'to', newMode)
     try {
       if (newMode === 'expanded') {
+        // Reset animation flag so animation plays when expanding
+        setHasAnimatedExpand(false)
         // Larger height to accommodate all providers with scrolling
         await appWindow.setSize(new LogicalSize(520, 600))
         setViewMode(newMode)
+        // Mark animation as done after a short delay
+        setTimeout(() => setHasAnimatedExpand(true), 600)
       } else {
         // Trigger collapse animation first
         setIsCollapsing(true)
@@ -1017,6 +1804,7 @@ function App() {
           await appWindow.setSize(new LogicalSize(520, 56))
           setViewMode(newMode)
           setIsCollapsing(false)
+          setHasAnimatedExpand(false)
         }, 300)
       }
     } catch (e) {
@@ -1082,13 +1870,20 @@ function App() {
 
   const color = getColor(usage.percent)
 
-  // Battery SVG component with dynamic gradient colors based on percentage
+  // Battery SVG component with dynamic gradient colors based on REMAINING percentage
+  // 100% = full battery = blue-green (good), 0% = empty = red (critical)
+  // The "remaining" represents how much is LEFT to use (inverted from "used")
   const Battery = ({ percent, color, disabled = false, uniqueId = 'default' }: { percent: number, color: string, disabled?: boolean, uniqueId?: string }) => {
-    const fillWidth = Math.min(Math.max(percent, 0), 100) * 0.7 // Scale to 70% of battery width
+    // percent = remaining percentage (100 = full, 0 = empty)
+    const remaining = Math.min(Math.max(percent, 0), 100)
+    const fillWidth = remaining * 0.7 // Scale to 70% of battery width for fill
     const opacity = disabled ? 0.4 : 1
 
-    // Generate gradient stops based on percentage thresholds
-    // <70%: bleu-vert, 70-85%: +jaune, 85-95%: +orange, 95-100%: +rouge
+    // New gradient system based on remaining percentage (inverted logic)
+    // Zone 1: 100%-50% remaining -> Blue-Green (OK)
+    // Zone 2: 50%-30% remaining -> Yellow appears (warning)
+    // Zone 3: 30%-20% remaining -> Orange-Yellow (alert)
+    // Zone 4: <20% remaining -> Red dominant (critical)
     const getGradientStops = () => {
       if (disabled) {
         return [
@@ -1096,57 +1891,93 @@ function App() {
           { offset: '100%', color: '#4a4a5a' }
         ]
       }
-      if (percent < 70) {
-        // Bleu -> Vert
+
+      // Zone 1: 100%-50% remaining - Blue -> Green (good)
+      if (remaining >= 50) {
         return [
-          { offset: '0%', color: '#2563EB' },
-          { offset: '100%', color: '#22F0B6' }
+          { offset: '0%', color: '#2563EB' },  // Blue
+          { offset: '100%', color: '#22F0B6' } // Green
         ]
-      } else if (percent < 85) {
-        // Bleu -> Vert -> Jaune
+      }
+      // Zone 2: 50%-30% remaining - Yellow appears, Blue/Green compress
+      else if (remaining >= 30) {
+        // Yellow takes 1/3, Blue-Green compress
         return [
-          { offset: '0%', color: '#2563EB' },
-          { offset: '50%', color: '#22F0B6' },
-          { offset: '100%', color: '#eab308' }
+          { offset: '0%', color: '#22F0B6' },  // Green
+          { offset: '65%', color: '#eab308' }, // Yellow dominant
+          { offset: '100%', color: '#eab308' } // Yellow
         ]
-      } else if (percent < 95) {
-        // Bleu -> Vert -> Jaune -> Orange
+      }
+      // Zone 3: 30%-20% remaining - Orange-Yellow (no more green)
+      else if (remaining >= 20) {
         return [
-          { offset: '0%', color: '#2563EB' },
-          { offset: '33%', color: '#22F0B6' },
-          { offset: '66%', color: '#eab308' },
-          { offset: '100%', color: '#f97316' }
+          { offset: '0%', color: '#eab308' },  // Yellow
+          { offset: '100%', color: '#f97316' } // Orange
         ]
-      } else {
-        // Bleu -> Vert -> Jaune -> Orange -> Rouge
+      }
+      // Zone 4: <20% remaining - Red dominant
+      else if (remaining >= 5) {
+        // Red becomes more dominant as we approach 0
+        const redDominance = 1 - (remaining / 20) // 0 at 20%, 0.75 at 5%
         return [
-          { offset: '0%', color: '#2563EB' },
-          { offset: '25%', color: '#22F0B6' },
-          { offset: '50%', color: '#eab308' },
-          { offset: '75%', color: '#f97316' },
-          { offset: '100%', color: '#ef4444' }
+          { offset: '0%', color: '#f97316' },  // Orange
+          { offset: `${(1 - redDominance) * 60}%`, color: '#f97316' },
+          { offset: '100%', color: '#ef4444' } // Red
+        ]
+      }
+      // <5% - Almost all red (critical)
+      else {
+        return [
+          { offset: '0%', color: '#ef4444' },  // Red
+          { offset: '30%', color: '#ef4444' },
+          { offset: '100%', color: '#dc2626' } // Darker red
         ]
       }
     }
 
     const gradientStops = getGradientStops()
-    const gradientId = `batteryGrad-${uniqueId}-${percent}`
+    const gradientId = `batteryGrad-${uniqueId}-${Math.round(remaining)}`
+
+    // For nearly empty battery (<5%), show a small red bar at the start
+    const showLowBatteryIndicator = remaining < 5 && remaining > 0 && !disabled
+    // Critical battery (<2%) - will blink
+    const isCriticalBattery = remaining < 2 && remaining > 0 && !disabled
+
+    // Outline gradient ID - always blue to green regardless of fill level
+    const outlineGradientId = `batteryOutline-${uniqueId}`
 
     return (
       <svg width="32" height="16" viewBox="0 0 32 16" style={{ opacity }}>
         <defs>
+          {/* Fill gradient - changes based on remaining level */}
           <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="0%">
             {gradientStops.map((stop, idx) => (
               <stop key={idx} offset={stop.offset} stopColor={stop.color} />
             ))}
           </linearGradient>
+          {/* Outline gradient - ALWAYS blue to green */}
+          <linearGradient id={outlineGradientId} x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor={disabled ? '#4a4a5a' : '#2563EB'} />
+            <stop offset="100%" stopColor={disabled ? '#4a4a5a' : '#22F0B6'} />
+          </linearGradient>
         </defs>
-        {/* Battery shell */}
-        <rect x="1" y="2" width="26" height="12" rx="3" fill="none" stroke={`url(#${gradientId})`} strokeWidth="1.5" />
-        {/* Battery cap */}
-        <rect x="28" y="5" width="3" height="6" rx="1" fill={disabled ? '#4a4a5a' : gradientStops[gradientStops.length - 1].color} />
-        {/* Battery fill */}
-        <rect x="3" y="4" width={fillWidth * 0.32} height="8" rx="1.5" fill={`url(#${gradientId})`} />
+        {/* Battery shell - ALWAYS blue-green gradient outline */}
+        <rect x="1" y="2" width="26" height="12" rx="3" fill="none" stroke={`url(#${outlineGradientId})`} strokeWidth="1.5" />
+        {/* Battery cap - green end of gradient */}
+        <rect x="28" y="5" width="3" height="6" rx="1" fill={disabled ? '#4a4a5a' : '#22F0B6'} />
+        {/* Battery fill - width based on remaining percentage */}
+        {/* Critical battery (<2%): smaller red bar that blinks */}
+        {isCriticalBattery && (
+          <rect x="3" y="4" width="2" height="8" rx="1" fill="#ef4444" className="battery-critical-blink" />
+        )}
+        {/* Low battery (2-5%): normal fill */}
+        {remaining >= 2 && remaining > 0 && (
+          <rect x="3" y="4" width={Math.max(fillWidth * 0.32, 2)} height="8" rx="1.5" fill={`url(#${gradientId})`} />
+        )}
+        {/* Empty battery indicator - small red bar when at 0% */}
+        {remaining === 0 && !disabled && (
+          <rect x="3" y="4" width="2" height="8" rx="1" fill="#ef4444" className="battery-critical-blink" />
+        )}
       </svg>
     )
   }
@@ -1164,26 +1995,64 @@ function App() {
     }
   }
 
-  // Helper to format reset time
-  const formatResetTime = (resetStr: string | null | undefined, usagePercent?: number | null) => {
+  // Helper to format reset time - uses PC local time for countdown calculation
+  const formatResetTime = (resetStr: string | null | undefined, usagePercent?: number | null, showStaleIndicator = false) => {
     // If no session active (no usage or expired), show waiting state
     if (!resetStr) return 'Waiting to start'
     try {
       const resetDate = new Date(resetStr)
       const now = new Date()
       const diff = resetDate.getTime() - now.getTime()
+
       // If reset time passed or usage is 0, session is not active
       if (diff <= 0) return 'Waiting to start'
+
       // If we have usage info and it's 0, we're waiting
       if (usagePercent !== undefined && usagePercent !== null && usagePercent === 0) {
         return 'Waiting to start'
       }
+
       const hours = Math.floor(diff / (1000 * 60 * 60))
       const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
-      if (hours > 0) return `${hours}h ${minutes.toString().padStart(2, '0')}m`
-      return `${minutes}m`
+
+      let timeStr = hours > 0 ? `${hours}h ${minutes.toString().padStart(2, '0')}m` : `${minutes}m`
+
+      // Add stale indicator if data is old
+      if (showStaleIndicator && claudeUsageCache?.isStale) {
+        const ageMs = Date.now() - claudeUsageCache.lastKnownAt
+        const ageMinutes = Math.round(ageMs / 60000)
+        timeStr += ` (~${ageMinutes}m ago)`
+      }
+
+      return timeStr
     } catch {
       return 'Waiting to start'
+    }
+  }
+
+  // Get cache age in human-readable format
+  const getCacheAgeDisplay = (): string | null => {
+    if (!claudeUsageCache?.isStale) return null
+    const ageMs = Date.now() - claudeUsageCache.lastKnownAt
+    const ageMinutes = Math.round(ageMs / 60000)
+    if (ageMinutes < 1) return 'just now'
+    if (ageMinutes === 1) return '1 min ago'
+    return `${ageMinutes} min ago`
+  }
+
+  // Helper to format 7-day reset time in days
+  const formatSevenDayReset = (resetStr: string | null | undefined): string | null => {
+    if (!resetStr) return null
+    try {
+      const resetDate = new Date(resetStr)
+      const now = new Date()
+      const diff = resetDate.getTime() - now.getTime()
+      if (diff <= 0) return null
+      const days = Math.ceil(diff / (1000 * 60 * 60 * 24))
+      if (days === 1) return '1 day'
+      return `${days} days`
+    } catch {
+      return null
     }
   }
 
@@ -1203,21 +2072,25 @@ function App() {
     }
   }
 
-  // Get gradient for usage gauge with customizable thresholds
-  const getUsageGradientStyle = (percent: number, providerId: string = 'claude-pro-max'): string => {
-    const thresholds = providerThresholds[providerId] || { green: 70, yellow: 85, orange: 95, red: 100 }
-    if (percent < thresholds.green) {
-      // Green
-      return 'linear-gradient(90deg, #4ade80, #22c55e)'
-    } else if (percent < thresholds.yellow) {
-      // Green -> Yellow
-      return 'linear-gradient(90deg, #22c55e, #4ade80, #eab308)'
-    } else if (percent < thresholds.orange) {
-      // Green -> Yellow -> Orange
-      return 'linear-gradient(90deg, #22c55e, #eab308, #f97316)'
-    } else {
-      // Green -> Yellow -> Orange -> Red
-      return 'linear-gradient(90deg, #22c55e, #eab308, #f97316, #ef4444)'
+  // Get gradient for usage gauge based on REMAINING percentage
+  // remainingPercent: 100 = full (good), 0 = empty (critical)
+  // Matches the Battery component's 4-zone system
+  const getUsageGradientStyle = (remainingPercent: number, providerId: string = 'claude-pro-max'): string => {
+    // Zone 1: 100%-50% remaining - Blue/Green (good)
+    if (remainingPercent >= 50) {
+      return 'linear-gradient(90deg, #2563EB, #22F0B6)'
+    }
+    // Zone 2: 50%-30% remaining - Green/Yellow (warning)
+    else if (remainingPercent >= 30) {
+      return 'linear-gradient(90deg, #22F0B6, #eab308)'
+    }
+    // Zone 3: 30%-20% remaining - Yellow/Orange (alert)
+    else if (remainingPercent >= 20) {
+      return 'linear-gradient(90deg, #eab308, #f97316)'
+    }
+    // Zone 4: <20% remaining - Orange/Red (critical)
+    else {
+      return 'linear-gradient(90deg, #f97316, #ef4444)'
     }
   }
 
@@ -1261,12 +2134,10 @@ function App() {
   }
 
   // Check for updates from GitHub releases (only notify when assets for current platform are available)
-  const checkForUpdates = useCallback(async () => {
-    console.log(`MeterAI: Checking for updates (current: v${APP_VERSION})...`)
+  const checkForUpdates = useCallback(async (shouldNotify: boolean = true) => {
     try {
       // Detect current platform
       const currentPlatform = await platform()
-      console.log(`MeterAI: Current platform: ${currentPlatform}`)
 
       // Map platform to expected asset patterns
       const platformAssetPatterns: Record<string, RegExp[]> = {
@@ -1278,7 +2149,17 @@ function App() {
       const expectedPatterns = platformAssetPatterns[currentPlatform] || []
 
       // Fetch latest release (not tags) - only published releases with assets
-      const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+      const url = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`
+
+      const response = await fetch<{
+        tag_name: string
+        name: string
+        draft: boolean
+        prerelease: boolean
+        assets: Array<{ name: string; state: string }>
+        message?: string
+        documentation_url?: string
+      }>(url, {
         method: 'GET',
         headers: {
           'Accept': 'application/vnd.github.v3+json',
@@ -1286,109 +2167,149 @@ function App() {
         }
       })
 
-      console.log('MeterAI: GitHub API response:', response.status, response.ok)
+      // Try to parse data even if response.ok is false (Tauri fetch behavior)
+      const release = response.data
+      if (!release) {
+        setLastUpdateCheck(Date.now())
+        localStorage.setItem('lastUpdateCheck', Date.now().toString())
+        return
+      }
 
-      if (response.ok && response.data) {
-        const release = response.data as {
-          tag_name: string
-          name: string
-          draft: boolean
-          prerelease: boolean
-          assets: Array<{ name: string; state: string }>
+      // Check if data looks like an error response
+      if (release.message && release.documentation_url) {
+        setLastUpdateCheck(Date.now())
+        localStorage.setItem('lastUpdateCheck', Date.now().toString())
+        return
+      }
+
+      // Validate release data
+      if (!release.tag_name) {
+        setLastUpdateCheck(Date.now())
+        localStorage.setItem('lastUpdateCheck', Date.now().toString())
+        return
+      }
+
+      // Skip drafts and prereleases
+      if (release.draft || release.prerelease) {
+        setLastUpdateCheck(Date.now())
+        localStorage.setItem('lastUpdateCheck', Date.now().toString())
+        return
+      }
+
+      const latestVersion = release.tag_name.replace(/^v/, '')
+
+      // Check if assets for current platform are available
+      const platformAssets = release.assets?.filter(asset =>
+        asset.state === 'uploaded' && expectedPatterns.some(pattern => pattern.test(asset.name))
+      ) || []
+
+      if (platformAssets.length === 0) {
+        // Don't notify - assets not ready for this platform
+        setLastUpdateCheck(Date.now())
+        localStorage.setItem('lastUpdateCheck', Date.now().toString())
+        return
+      }
+
+      // Compare versions
+      if (latestVersion && latestVersion !== APP_VERSION) {
+        const currentParts = APP_VERSION.split('.').map(Number)
+        const latestParts = latestVersion.split('.').map(Number)
+
+        let isNewer = false
+        for (let i = 0; i < Math.max(currentParts.length, latestParts.length); i++) {
+          const current = currentParts[i] || 0
+          const latest = latestParts[i] || 0
+          if (latest > current) {
+            isNewer = true
+            break
+          } else if (latest < current) {
+            break
+          }
         }
 
-        // Skip drafts and prereleases
-        if (release.draft || release.prerelease) {
-          console.log('MeterAI: Latest release is draft/prerelease, skipping')
-          setLastUpdateCheck(Date.now())
-          localStorage.setItem('lastUpdateCheck', Date.now().toString())
-          return
-        }
+        if (isNewer) {
+          // Always set state (for About badge) regardless of notification setting
+          setUpdateAvailable(latestVersion)
+          localStorage.setItem('updateAvailable', latestVersion)
 
-        const latestVersion = release.tag_name.replace(/^v/, '')
-        console.log(`MeterAI: Latest release: v${latestVersion}`)
-        console.log(`MeterAI: Assets count: ${release.assets?.length || 0}`)
-
-        // Check if assets for current platform are available
-        const platformAssets = release.assets?.filter(asset =>
-          asset.state === 'uploaded' && expectedPatterns.some(pattern => pattern.test(asset.name))
-        ) || []
-
-        console.log(`MeterAI: Platform assets found: ${platformAssets.length}`)
-        platformAssets.forEach(a => console.log(`  - ${a.name}`))
-
-        if (platformAssets.length === 0) {
-          console.log(`MeterAI: No assets available for ${currentPlatform} yet (build in progress?)`)
-          // Don't notify - assets not ready for this platform
-          setLastUpdateCheck(Date.now())
-          localStorage.setItem('lastUpdateCheck', Date.now().toString())
-          return
-        }
-
-        // Compare versions
-        if (latestVersion && latestVersion !== APP_VERSION) {
-          const currentParts = APP_VERSION.split('.').map(Number)
-          const latestParts = latestVersion.split('.').map(Number)
-
-          let isNewer = false
-          for (let i = 0; i < Math.max(currentParts.length, latestParts.length); i++) {
-            const current = currentParts[i] || 0
-            const latest = latestParts[i] || 0
-            if (latest > current) {
-              isNewer = true
-              break
-            } else if (latest < current) {
-              break
+          // Only show tray notification if enabled AND shouldNotify is true
+          if (shouldNotify && notifyUpdateEnabled) {
+            try {
+              const { isPermissionGranted, requestPermission, sendNotification } = await import('@tauri-apps/api/notification')
+              let permissionGranted = await isPermissionGranted()
+              if (!permissionGranted) {
+                const permission = await requestPermission()
+                permissionGranted = permission === 'granted'
+              }
+              if (permissionGranted) {
+                sendNotification({
+                  title: 'MeterAI Update Available',
+                  body: `Version ${latestVersion} is ready to download`
+                })
+              }
+            } catch {
+              // Notification failed, but update state is already set
             }
           }
-
-          if (isNewer) {
-            setUpdateAvailable(latestVersion)
-            console.log(`MeterAI: Update available! v${latestVersion} > v${APP_VERSION} (assets ready for ${currentPlatform})`)
-          } else {
-            console.log(`MeterAI: No update needed (${latestVersion} is not newer than ${APP_VERSION})`)
-            setUpdateAvailable(null)
-          }
         } else {
-          console.log(`MeterAI: Already on latest version (${APP_VERSION})`)
           setUpdateAvailable(null)
+          localStorage.removeItem('updateAvailable')
         }
-      } else if (response.status === 404) {
-        console.log('MeterAI: No releases found')
       } else {
-        console.log('MeterAI: Failed to fetch release info')
+        setUpdateAvailable(null)
+        localStorage.removeItem('updateAvailable')
       }
       setLastUpdateCheck(Date.now())
       localStorage.setItem('lastUpdateCheck', Date.now().toString())
-    } catch (e) {
-      console.log('MeterAI: Failed to check for updates:', e)
+    } catch {
+      // Silently fail - update check is not critical
     }
-  }, [])
+  }, [notifyUpdateEnabled])
 
   // Check for updates on startup and every 2 hours
   useEffect(() => {
     const twoHoursMs = 2 * 60 * 60 * 1000
 
-    console.log(`MeterAI: App started (v${APP_VERSION})`)
-    console.log(`MeterAI: GitHub repo: ${GITHUB_REPO}`)
+    // Clear problematic localStorage values that may cause issues
+    localStorage.removeItem('savePositionEnabled')
+    localStorage.removeItem('windowPosition')
 
-    // Restore stored update state immediately
+    // Restore stored update state immediately (only if stored version is newer than current)
     const storedUpdate = localStorage.getItem('updateAvailable')
+
     if (storedUpdate && storedUpdate !== APP_VERSION) {
-      console.log(`MeterAI: Restored cached update: v${storedUpdate}`)
-      setUpdateAvailable(storedUpdate)
+      // Verify stored version is actually newer than current version
+      const currentParts = APP_VERSION.split('.').map(Number)
+      const storedParts = storedUpdate.split('.').map(Number)
+
+      let isStillNewer = false
+      for (let i = 0; i < Math.max(currentParts.length, storedParts.length); i++) {
+        const current = currentParts[i] || 0
+        const stored = storedParts[i] || 0
+        if (stored > current) {
+          isStillNewer = true
+          break
+        } else if (stored < current) {
+          break
+        }
+      }
+      if (isStillNewer) {
+        setUpdateAvailable(storedUpdate)
+      } else {
+        // Clear stale cached update (user already updated past this version)
+        localStorage.removeItem('updateAvailable')
+      }
     }
 
-    // Always check on startup (with small delay to let app initialize)
+    // Check on startup (with small delay to let app initialize)
+    // Pass false to not show notification on startup - only show for new discoveries
     const startupCheck = setTimeout(() => {
-      console.log('MeterAI: Running startup update check...')
-      checkForUpdates()
-    }, 3000) // 3 second delay after startup
+      checkForUpdates(false)
+    }, 2000)
 
-    // Set interval for checks every 2 hours
+    // Set interval for checks every 2 hours - these can show notifications
     const interval = setInterval(() => {
-      console.log('MeterAI: Running periodic update check (2h interval)...')
-      checkForUpdates()
+      checkForUpdates(true)
     }, twoHoursMs)
 
     return () => {
@@ -1480,68 +2401,43 @@ function App() {
             </label>
           </div>
 
-          {/* Claude Config Status */}
-          <div className="settings-row config-status-row">
-            <span className="settings-label">Claude Configuration</span>
-            <span className={`config-status ${configStatus.detected ? 'detected' : 'not-detected'}`}>
-              {configStatus.detected ? 'Detected' : 'Not found'}
-            </span>
+          {/* Update notification toggle */}
+          <div className="settings-row">
+            <span className="settings-label">Notify when update available</span>
+            <label className="settings-toggle-mini">
+              <input
+                type="checkbox"
+                checked={notifyUpdateEnabled}
+                onChange={(e) => {
+                  const enabled = e.target.checked
+                  setNotifyUpdateEnabled(enabled)
+                  localStorage.setItem('notifyUpdateEnabled', enabled ? 'true' : 'false')
+                }}
+              />
+              <span className="settings-toggle-slider-mini"></span>
+            </label>
           </div>
 
-          {configStatus.customPath && (
-            <div className="settings-row config-path-row">
-              <span className="config-path-text" title={configStatus.customPath}>
-                {configStatus.customPath.length > 40
-                  ? '...' + configStatus.customPath.slice(-37)
-                  : configStatus.customPath}
-              </span>
-              <button
-                className="config-clear-btn"
-                onClick={async () => {
-                  try {
-                    await invoke('set_custom_credentials_path', { path: null })
-                    const status = await invoke<{ detected: boolean; source: string; customPath: string | null }>('get_config_detection_status')
-                    setConfigStatus(status)
-                  } catch (err) {
-                    console.error('Failed to clear custom path:', err)
+          {/* Save position toggle - temporarily disabled due to coordinate issues
+          <div className="settings-row">
+            <span className="settings-label">Remember position</span>
+            <label className="settings-toggle-mini">
+              <input
+                type="checkbox"
+                checked={savePositionEnabled}
+                onChange={(e) => {
+                  const enabled = e.target.checked
+                  setSavePositionEnabled(enabled)
+                  localStorage.setItem('savePositionEnabled', enabled ? 'true' : 'false')
+                  if (!enabled) {
+                    localStorage.removeItem('windowPosition')
                   }
                 }}
-                title="Remove custom path"
-              >
-                ✕
-              </button>
-            </div>
-          )}
-
-          {!configStatus.detected && (
-            <div className="settings-help">
-              <p className="help-text">
-                File not found automatically. Paths checked:
-              </p>
-              <ul className="help-paths">
-                <li>~/.claude/.credentials.json</li>
-                <li>~/.claude/credentials.json</li>
-                <li>~/.config/claude-code/auth.json</li>
-              </ul>
-              <button
-                className="browse-config-btn"
-                onClick={async () => {
-                  try {
-                    const path = await invoke<string | null>('browse_credentials_file')
-                    if (path) {
-                      await invoke('set_custom_credentials_path', { path })
-                      const status = await invoke<{ detected: boolean; source: string; customPath: string | null }>('get_config_detection_status')
-                      setConfigStatus(status)
-                    }
-                  } catch (err) {
-                    console.error('Failed to browse for config:', err)
-                  }
-                }}
-              >
-                Browse...
-              </button>
-            </div>
-          )}
+              />
+              <span className="settings-toggle-slider-mini"></span>
+            </label>
+          </div>
+          */}
         </div>
 
         <div className="about-panel-section">
@@ -1565,7 +2461,7 @@ function App() {
           </div>
         </div>
 
-        <div className="about-panel-section">
+        <div id="support-development" className="about-panel-section">
           <h3 className="about-section-title">Support Development</h3>
           <p className="about-donate-text">If you find this tool useful, consider supporting its development:</p>
 
@@ -1624,8 +2520,18 @@ function App() {
         <div className="about-panel-section">
           <h3 className="about-section-title">License</h3>
           <p className="about-license-text">
-            Source-available for viewing and auditing only.<br/>
-            All rights reserved. © 2026 HPSC
+            Licensed under <strong>GNU GPL-3.0-or-later</strong><br/>
+            Free to use, modify, and distribute under GPL terms.
+          </p>
+          <p className="about-license-text about-license-publisher">
+            Published by <strong>HPSC SAS</strong> · © 2026<br/>
+            <span className="signpath-badge">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                <path d="M9 12l2 2 4-4"></path>
+              </svg>
+              Signed by SignPath Foundation
+            </span>
           </p>
         </div>
 
@@ -1641,6 +2547,18 @@ function App() {
     )
   }
 
+  // Scroll to Support Development section (used when update is available)
+  const scrollToSupportSection = useCallback(() => {
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        const supportSection = document.getElementById('support-development')
+        if (supportSection) {
+          supportSection.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }
+      }, 100) // Small delay to ensure panel is rendered
+    })
+  }, [])
+
   // Open About - expands the window if in compact mode
   const openAbout = useCallback(async () => {
     if (viewMode === 'compact') {
@@ -1652,7 +2570,23 @@ function App() {
       }
     }
     setShowAbout(true)
-  }, [viewMode])
+
+    // If update is available, scroll to Support Development section after panel renders
+    if (updateAvailable) {
+      scrollToSupportSection()
+    }
+  }, [viewMode, updateAvailable, scrollToSupportSection])
+
+  // Toggle About panel (for expanded mode button)
+  const toggleAbout = useCallback(() => {
+    const willOpen = !showAbout
+    setShowAbout(willOpen)
+
+    // If opening and update is available, scroll to Support Development section
+    if (willOpen && updateAvailable) {
+      scrollToSupportSection()
+    }
+  }, [showAbout, updateAvailable, scrollToSupportSection])
 
   // Claude Code Detection Popup handlers
   const handleClaudeDetectedEnable = useCallback(() => {
@@ -1669,23 +2603,72 @@ function App() {
   // Compact banner mode
   if (viewMode === 'compact') {
     const anthropicProvider = providers.find(p => p.provider_type === 'anthropic')
-    const openaiProvider = providers.find(p => p.provider_type === 'openai')
     const anthropicUsage = providersUsage['anthropic'] || { percent: 0 }
-    const openaiUsage = providersUsage['openai'] || { percent: 0 }
 
     // Claude is configured if we have Claude Code token OR API key
     const isAnthropicConfigured = hasClaudeCodeToken || (anthropicProvider?.enabled && anthropicProvider?.has_api_key)
-    const isOpenaiConfigured = openaiProvider?.enabled && openaiProvider?.has_api_key
+    // OpenAI is configured if we have an API key (use the state we track)
+    const isOpenaiConfigured = hasOpenaiApiKey
 
-    // Use Claude Code real data if available
-    const claudeDisplayPercent = claudeCodeUsage?.success && claudeCodeUsage?.five_hour_percent !== null
+    // Use Claude Code real data if available - this is the USED percentage
+    const claudeUsedPercent = claudeCodeUsage?.success && claudeCodeUsage?.five_hour_percent !== null
       ? Math.round(claudeCodeUsage.five_hour_percent)
       : anthropicUsage.percent
+
+    // For battery display: REMAINING percentage (100 = full, 0 = empty)
+    const claudeRemainingPercent = 100 - claudeUsedPercent
+
+    // Get subscription type for display name (Pro, Max, etc.)
+    const claudeSubscriptionType = claudeCodeUsage?.subscription_type || null
+    // Format display name: use custom name if set, else "Claude Max" or "Claude Pro" based on subscription_type
+    const claudeDisplayName = customProviderNames['claude-pro-max']
+      || (claudeSubscriptionType
+        ? `Claude ${claudeSubscriptionType.charAt(0).toUpperCase() + claudeSubscriptionType.slice(1)}`
+        : 'Claude Pro') // Default fallback
+
+    // OpenAI: calculate remaining credits for battery display
+    // IMPORTANT: $0/$0 (no credits, no limit) = EMPTY battery (0%)
+    // For pay-as-you-go with no usage data or $0 limit: show empty
+    // For hard limit: use remaining from limit
+    const openaiUsageUsd = openaiUsage?.usage_usd ?? 0
+    const openaiLimitUsd = openaiUsage?.limit_usd ?? 0
+
+    const openaiRemainingPercent = openaiUsage?.success
+      ? (openaiUsage.is_pay_as_you_go
+        // Pay-as-you-go: if $0 usage AND $0 limit (not configured), show empty battery
+        // Otherwise, estimate remaining based on $100 monthly budget
+        ? (openaiLimitUsd === 0 && openaiUsageUsd === 0
+          ? 0 // $0/$0 = empty battery
+          : Math.max(0, 100 - Math.min(openaiUsageUsd * 1, 100))) // $100 budget = 1% per $1
+        : (openaiLimitUsd > 0
+          ? Math.max(0, 100 * (1 - openaiUsageUsd / openaiLimitUsd)) // Remaining = limit - usage
+          : 0)) // No limit set = empty
+      : 0 // If not loaded or error, show empty (safer than full)
+
+    // For display text: show remaining / total format
+    // Format: "$X.XX / $Y.XX" always (e.g., "$0.00 / $0.00", "$17.50 / $20.00")
+    // No color coding needed - battery already shows the state
+    const openaiRemainingDisplay = openaiUsage?.success
+      ? (openaiUsage.is_pay_as_you_go
+        // Pay-as-you-go: show remaining / total with 2 decimals
+        // If limit is 0, show "spent / 0" (e.g., "$0.00 / $0.00")
+        ? (openaiLimitUsd > 0
+          ? `$${Math.max(0, openaiLimitUsd - openaiUsageUsd).toFixed(2)} / $${openaiLimitUsd.toFixed(2)}`
+          : `$${openaiUsageUsd.toFixed(2)} / $0.00`) // Show "$0.00 / $0.00" when no credits
+        : `${Math.round(100 - (openaiUsage.percent ?? 0))}%`) // Hard limit: show remaining%
+      : '$0.00 / $0.00'
 
     // Format reset time for compact display - pass usage percent to detect waiting state
     const compactResetDisplay = claudeCodeUsage?.success && claudeCodeUsage?.five_hour_reset
       ? formatResetTime(claudeCodeUsage.five_hour_reset, claudeCodeUsage.five_hour_percent)
       : countdown
+
+    // Get time progress for color calculation (0% = just started, 100% = about to reset)
+    const timeProgressCompact = claudeCodeUsage?.success && claudeCodeUsage?.five_hour_reset
+      ? getTimeProgress(claudeCodeUsage.five_hour_reset)
+      : 0
+    // Get color for timer based on time elapsed (red when far, blue when close to reset)
+    const timerColorCompact = getTimeGradientColor(timeProgressCompact)
 
     return (
       <div className="banner-container" onMouseDown={startDrag}>
@@ -1712,37 +2695,63 @@ function App() {
         </div>
 
         {/* Providers - only show if at least one is enabled */}
-        {(enabledProviders['claude-pro-max'] || enabledProviders['openai']) && (
+        {(enabledProviders['claude-pro-max'] || enabledProviders['openai-api']) && (
           <div className="banner-providers">
-            {/* Claude/Anthropic - only show if enabled via toggle */}
+            {/* Claude/Anthropic - new compact 2-line layout */}
+            {/* Line 1: Claude Pro/Max + Battery */}
+            {/* Line 2: Timer icon + time + used% */}
             {enabledProviders['claude-pro-max'] && (
-              <div className={`banner-provider-wrapper ${!isAnthropicConfigured ? 'disabled' : ''}`} title={isAnthropicConfigured ? `Claude: ${claudeDisplayPercent}% (5h) - Reset: ${compactResetDisplay}` : 'Claude: Not configured'}>
-                <div className="banner-provider-main">
-                  <span className="provider-label">Claude</span>
-                  <Battery percent={claudeDisplayPercent} color="#d97706" disabled={!isAnthropicConfigured} uniqueId="claude-compact" />
-                  <span className="provider-percent">{isAnthropicConfigured ? `${claudeDisplayPercent}%` : '--'}</span>
+              <div
+                className={`banner-provider-compact ${!isAnthropicConfigured ? 'disabled' : ''}`}
+                title={isAnthropicConfigured ? `${claudeDisplayName}: ${claudeRemainingPercent}% remaining (5h) - Reset: ${compactResetDisplay}` : 'Claude: Not configured'}
+              >
+                <div className="provider-line-top">
+                  <span className="provider-name">{claudeDisplayName}</span>
+                  <Battery percent={claudeRemainingPercent} color="#d97706" disabled={!isAnthropicConfigured} uniqueId="claude-compact" />
                 </div>
                 {isAnthropicConfigured && (
                   <div
-                    className={`provider-reset-row ${compactResetDisplay === 'Waiting to start' ? 'waiting' : ''}`}
-                    style={{ color: compactResetDisplay === 'Waiting to start' ? '#22F0B6' : getTimeGradientColor(getTimeProgress(claudeCodeUsage?.five_hour_reset)) }}
+                    className={`provider-line-bottom ${compactResetDisplay === 'Waiting to start' ? 'waiting' : ''}`}
+                    style={{ color: compactResetDisplay === 'Waiting to start' ? '#22F0B6' : timerColorCompact }}
                   >
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <circle cx="12" cy="12" r="10"></circle>
                       <polyline points="12,6 12,12 16,14"></polyline>
                     </svg>
-                    {compactResetDisplay}
+                    <span className="provider-time">{compactResetDisplay}</span>
+                    <span className="provider-remaining">{claudeRemainingPercent}%</span>
+                  </div>
+                )}
+                {!isAnthropicConfigured && (
+                  <div className="provider-line-bottom disabled">
+                    <span className="provider-time">--</span>
                   </div>
                 )}
               </div>
             )}
 
-            {/* OpenAI - only show if enabled via toggle */}
-            {enabledProviders['openai'] && (
-              <div className={`banner-provider ${!isOpenaiConfigured ? 'disabled' : ''}`} title={isOpenaiConfigured ? `OpenAI: ${openaiUsage.percent}%` : 'OpenAI: Not configured'}>
-                <span className="provider-label">OpenAI</span>
-                <Battery percent={openaiUsage.percent} color="#10a37f" disabled={!isOpenaiConfigured} uniqueId="openai-compact" />
-                <span className="provider-percent">{isOpenaiConfigured ? `${openaiUsage.percent}%` : '--'}</span>
+            {/* OpenAI - new compact 2-line layout */}
+            {/* Line 1: OpenAI API + Battery */}
+            {/* Line 2: Remaining credits ($X.XX / $Y.YY) */}
+            {enabledProviders['openai-api'] && (
+              <div
+                className={`banner-provider-compact ${!isOpenaiConfigured ? 'disabled' : ''}`}
+                title={isOpenaiConfigured
+                  ? `${customProviderNames['openai-api'] || 'OpenAI API'}: ${openaiRemainingDisplay} remaining`
+                  : `${customProviderNames['openai-api'] || 'OpenAI API'}: Not configured`}
+              >
+                <div className="provider-line-top">
+                  <span className="provider-name">{customProviderNames['openai-api'] || 'OpenAI API'}</span>
+                  <Battery
+                    percent={openaiRemainingPercent}
+                    color="#10a37f"
+                    disabled={!isOpenaiConfigured}
+                    uniqueId="openai-compact"
+                  />
+                </div>
+                <div className="provider-line-bottom">
+                  <span className="provider-remaining">{isOpenaiConfigured ? openaiRemainingDisplay : '--'}</span>
+                </div>
               </div>
             )}
           </div>
@@ -1986,20 +2995,75 @@ function App() {
   if (viewMode === 'expanded') {
     const anthropicProvider = providers.find(p => p.provider_type === 'anthropic')
     const openaiProvider = providers.find(p => p.provider_type === 'openai')
-    const anthropicUsage = providersUsage['anthropic'] || { used: 0, limit: 100, percent: 0 }
-    const openaiUsage = providersUsage['openai'] || { used: 0, limit: 100, percent: 0 }
+    const anthropicUsageLocal = providersUsage['anthropic'] || { used: 0, limit: 100, percent: 0 }
+    const openaiUsageLocal = providersUsage['openai'] || { used: 0, limit: 100, percent: 0 }
 
     // Check if Claude Code token is available (for real usage data)
     const isAnthropicConfigured = hasClaudeCodeToken || (anthropicProvider?.enabled && anthropicProvider?.has_api_key)
-    const isOpenaiConfigured = openaiProvider?.enabled && openaiProvider?.has_api_key
+    // OpenAI is configured if we have an API key
+    const isOpenaiConfigured = hasOpenaiApiKey
 
-    // Use Claude Code real data if available
-    const claudeFiveHourPercent = claudeCodeUsage?.five_hour_percent ?? anthropicUsage.percent
+    // Use Claude Code real data if available - this is the USED percentage
+    const claudeFiveHourUsedPercent = claudeCodeUsage?.five_hour_percent ?? anthropicUsageLocal.percent
     const claudeSevenDayPercent = claudeCodeUsage?.seven_day_percent
+    const claudeSevenDayReset = claudeCodeUsage?.seven_day_reset
+
+    // For battery: REMAINING percentage (100 = full, 0 = empty)
+    const claudeFiveHourRemainingPercent = 100 - claudeFiveHourUsedPercent
+
+    // Get subscription type for display name (Pro, Max, etc.)
+    const claudeSubscriptionTypeExpanded = claudeCodeUsage?.subscription_type || null
+    // Format display name: use custom name if set, else "Claude Max" or "Claude Pro" based on subscription_type
+    const claudeDisplayNameExpanded = customProviderNames['claude-pro-max']
+      || (claudeSubscriptionTypeExpanded
+        ? `Claude ${claudeSubscriptionTypeExpanded.charAt(0).toUpperCase() + claudeSubscriptionTypeExpanded.slice(1)}`
+        : 'Claude Pro') // Default fallback
+
+    // OpenAI: calculate remaining credits for battery display
+    // IMPORTANT: $0/$0 (no credits, no limit) = EMPTY battery (0%)
+    const openaiUsageUsdExpanded = openaiUsage?.usage_usd ?? 0
+    const openaiLimitUsdExpanded = openaiUsage?.limit_usd ?? 0
+
+    const openaiRemainingPercentExpanded = openaiUsage?.success
+      ? (openaiUsage.is_pay_as_you_go
+        // Pay-as-you-go: if $0 usage AND $0 limit (not configured), show empty battery
+        ? (openaiLimitUsdExpanded === 0 && openaiUsageUsdExpanded === 0
+          ? 0 // $0/$0 = empty battery
+          : Math.max(0, 100 - Math.min(openaiUsageUsdExpanded * 1, 100))) // $100 budget = 1% per $1
+        : (openaiLimitUsdExpanded > 0
+          ? Math.max(0, 100 * (1 - openaiUsageUsdExpanded / openaiLimitUsdExpanded))
+          : 0)) // No limit set = empty
+      : 0 // If not loaded or error, show empty
+
+    // For display text: show remaining / total format
+    // Format: "$X.XX / $Y.XX" always (e.g., "$0.00 / $0.00", "$17.50 / $20.00")
+    const openaiRemainingDisplayExpanded = openaiUsage?.success
+      ? (openaiUsage.is_pay_as_you_go
+        // Pay-as-you-go: show remaining / total with 2 decimals
+        ? (openaiLimitUsdExpanded > 0
+          ? `$${Math.max(0, openaiLimitUsdExpanded - openaiUsageUsdExpanded).toFixed(2)} / $${openaiLimitUsdExpanded.toFixed(2)}`
+          : `$${openaiUsageUsdExpanded.toFixed(2)} / $0.00`) // Show "$0.00 / $0.00" when no credits
+        : `${Math.round(100 - (openaiUsage.percent ?? 0))}%`) // Hard limit: show remaining%
+      : '$0.00 / $0.00'
+
+    // Get time progress for color calculation (0% = just started, 100% = about to reset)
+    const timeProgressExpanded = claudeCodeUsage?.success && claudeCodeUsage?.five_hour_reset
+      ? getTimeProgress(claudeCodeUsage.five_hour_reset)
+      : 0
+    // Get color for timer based on time elapsed (red when far, blue when close to reset)
+    const timerColorExpanded = getTimeGradientColor(timeProgressExpanded)
 
     // Filter providers based on category and search
     const filteredProviders = AI_PROVIDERS.filter(p => {
-      const matchesCategory = categoryFilter === 'all' || p.category === categoryFilter
+      const isEnabled = enabledProviders[p.id] ?? false
+      let matchesCategory = false
+      if (categoryFilter === 'all') {
+        matchesCategory = true
+      } else if (categoryFilter === 'available') {
+        matchesCategory = isEnabled
+      } else {
+        matchesCategory = p.category === categoryFilter
+      }
       const matchesSearch = searchQuery === '' ||
         p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         p.brand.toLowerCase().includes(searchQuery.toLowerCase())
@@ -2055,6 +3119,10 @@ function App() {
           setHasClaudeCodeToken={setHasClaudeCodeToken}
           setEnabledProviders={setEnabledProviders}
           refreshClaudeCodeUsage={refreshClaudeCodeUsage}
+          tokenStatus={tokenStatus}
+          setTokenStatus={setTokenStatus}
+          customProviderNames={customProviderNames}
+          setCustomProviderNames={setCustomProviderNames}
         />
 
         {/* Same banner as compact mode */}
@@ -2081,36 +3149,56 @@ function App() {
           </div>
 
           {/* Providers - only show if at least one is enabled */}
-          {(enabledProviders['claude-pro-max'] || enabledProviders['openai']) && (
+          {(enabledProviders['claude-pro-max'] || enabledProviders['openai-api']) && (
             <div className="banner-providers">
-              {/* Claude/Anthropic - only show if enabled via toggle */}
+              {/* Claude/Anthropic - new compact 2-line layout */}
               {enabledProviders['claude-pro-max'] && (
-                <div className={`banner-provider-wrapper ${!isAnthropicConfigured ? 'disabled' : ''}`}>
-                  <div className="banner-provider-main">
-                    <span className="provider-label">Claude</span>
-                    <Battery percent={claudeFiveHourPercent} color="#d97706" disabled={!isAnthropicConfigured} uniqueId="claude-expanded" />
-                    <span className="provider-percent">{isAnthropicConfigured ? `${Math.round(claudeFiveHourPercent)}%` : '--'}</span>
+                <div
+                  className={`banner-provider-compact ${!isAnthropicConfigured ? 'disabled' : ''}`}
+                  title={isAnthropicConfigured ? `${claudeDisplayNameExpanded}: ${Math.round(claudeFiveHourRemainingPercent)}% remaining (5h)` : 'Claude: Not configured'}
+                >
+                  <div className="provider-line-top">
+                    <span className="provider-name">{claudeDisplayNameExpanded}</span>
+                    <Battery percent={claudeFiveHourRemainingPercent} color="#d97706" disabled={!isAnthropicConfigured} uniqueId="claude-expanded" />
                   </div>
                   {isAnthropicConfigured && (
                     <div
-                      className={`provider-reset-row ${!isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? 'waiting' : ''}`}
-                      style={{ color: !isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? '#22F0B6' : getTimeGradientColor(getTimeProgress(claudeCodeUsage?.five_hour_reset)) }}
+                      className={`provider-line-bottom ${!isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? 'waiting' : ''}`}
+                      style={{ color: !isClaudeSessionActive(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent) ? '#22F0B6' : timerColorExpanded }}
                     >
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                         <circle cx="12" cy="12" r="10"></circle>
                         <polyline points="12,6 12,12 16,14"></polyline>
                       </svg>
-                      {formatResetTime(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent)}
+                      <span className="provider-time">{formatResetTime(claudeCodeUsage?.five_hour_reset, claudeCodeUsage?.five_hour_percent)}</span>
+                      <span className="provider-remaining">{Math.round(claudeFiveHourRemainingPercent)}%</span>
+                    </div>
+                  )}
+                  {!isAnthropicConfigured && (
+                    <div className="provider-line-bottom disabled">
+                      <span className="provider-time">--</span>
                     </div>
                   )}
                 </div>
               )}
-              {/* OpenAI - only show if enabled via toggle */}
-              {enabledProviders['openai'] && (
-                <div className={`banner-provider ${!isOpenaiConfigured ? 'disabled' : ''}`}>
-                  <span className="provider-label">OpenAI</span>
-                  <Battery percent={openaiUsage.percent} color="#10a37f" disabled={!isOpenaiConfigured} uniqueId="openai-expanded" />
-                  <span className="provider-percent">{isOpenaiConfigured ? `${openaiUsage.percent}%` : '--'}</span>
+              {/* OpenAI - new compact 2-line layout */}
+              {enabledProviders['openai-api'] && (
+                <div
+                  className={`banner-provider-compact ${!isOpenaiConfigured ? 'disabled' : ''}`}
+                  title={isOpenaiConfigured ? `${customProviderNames['openai-api'] || 'OpenAI API'}: ${openaiRemainingDisplayExpanded}` : `${customProviderNames['openai-api'] || 'OpenAI API'}: Not configured`}
+                >
+                  <div className="provider-line-top">
+                    <span className="provider-name">{customProviderNames['openai-api'] || 'OpenAI API'}</span>
+                    <Battery
+                      percent={openaiRemainingPercentExpanded}
+                      color="#10a37f"
+                      disabled={!isOpenaiConfigured}
+                      uniqueId="openai-expanded"
+                    />
+                  </div>
+                  <div className="provider-line-bottom">
+                    <span className="provider-remaining">{isOpenaiConfigured ? openaiRemainingDisplayExpanded : '--'}</span>
+                  </div>
                 </div>
               )}
             </div>
@@ -2128,7 +3216,7 @@ function App() {
                 <polyline points="18,15 12,9 6,15"></polyline>
               </svg>
             </button>
-            <button className={`banner-btn about-btn ${updateAvailable ? 'has-update' : ''} ${showAbout ? 'active' : ''}`} onClick={() => setShowAbout(!showAbout)} title="About">
+            <button className={`banner-btn about-btn ${updateAvailable ? 'has-update' : ''} ${showAbout ? 'active' : ''}`} onClick={toggleAbout} title="About">
               <span className="about-icon-text">i</span>
               {updateAvailable && <span className="update-dot"></span>}
             </button>
@@ -2147,7 +3235,7 @@ function App() {
         </div>
 
         {/* Expanded content with gradient theme */}
-        <div className={`expanded-content ${isCollapsing ? 'collapsing' : ''}`}>
+        <div className={`expanded-content ${isCollapsing ? 'collapsing' : ''} ${hasAnimatedExpand ? 'no-animation' : ''}`}>
           {/* About Panel - shown when showAbout is true */}
           {showAbout ? (
             <AboutPanel />
@@ -2169,6 +3257,16 @@ function App() {
 
           {/* Category filter pills */}
           <div className="category-filters">
+            <div
+              className={`category-filter-pill ${categoryFilter === 'available' ? 'active' : ''}`}
+              onClick={() => setCategoryFilter('available')}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                <polyline points="22 4 12 14.01 9 11.01"></polyline>
+              </svg>
+              Available
+            </div>
             <div
               className={`category-filter-pill ${categoryFilter === 'all' ? 'active' : ''}`}
               onClick={() => setCategoryFilter('all')}
@@ -2195,7 +3293,16 @@ function App() {
           {/* Provider list by category */}
           <div className="expanded-cards">
             {categories.map(category => {
-              const categoryProviders = filteredProviders.filter(p => p.category === category)
+              const categoryProviders = filteredProviders
+                .filter(p => p.category === category)
+                // Sort enabled providers first
+                .sort((a, b) => {
+                  const aEnabled = enabledProviders[a.id] ?? false
+                  const bEnabled = enabledProviders[b.id] ?? false
+                  if (aEnabled && !bEnabled) return -1
+                  if (!aEnabled && bEnabled) return 1
+                  return 0
+                })
               if (categoryProviders.length === 0) return null
 
               const isCollapsed = collapsedCategories[category]
@@ -2237,15 +3344,25 @@ function App() {
                     // Special handling for Claude with real OAuth data
                     // Show detailed card if we have Claude Code token, even if no active session (usage=0)
                     const isClaudeWithRealData = isClaudeProvider && hasClaudeCodeToken && (claudeCodeUsage?.success || claudeCodeUsage !== null)
-                    const displayPercent = isClaudeWithRealData
-                      ? Math.round(claudeFiveHourPercent ?? 0)
+
+                    // Used percentage for display text
+                    const usedPercent = isClaudeWithRealData
+                      ? Math.round(claudeFiveHourUsedPercent ?? 0)
                       : provUsage.percent
+
+                    // Remaining percentage for progress bar (inverted: 100 = full, 0 = empty)
+                    const remainingPercent = 100 - usedPercent
+
+                    const isOpenAIProvider = providerId === 'openai-api'
+                    const isOpenAIWithApiKey = isOpenAIProvider && hasOpenaiApiKey
 
                     const refreshProvider = async () => {
                       setRefreshingProvider(providerId)
                       try {
                         if (isClaudeProvider && hasClaudeCodeToken) {
                           await refreshClaudeCodeUsage()
+                        } else if (isOpenAIProvider && hasOpenaiApiKey) {
+                          await refreshOpenAIUsage()
                         }
                       } catch (e) {
                         console.log('Failed to refresh provider')
@@ -2317,9 +3434,14 @@ function App() {
                           <div className="expanded-usage-block">
                             <div className="expanded-usage-label-row">
                               <span className="expanded-usage-label">Usage</span>
-                              <span className="expanded-usage-badge badge-5h">5h: {Math.round(claudeFiveHourPercent)}%</span>
+                              <span className="expanded-usage-badge badge-5h">5h: {Math.round(claudeFiveHourUsedPercent)}%</span>
                               {claudeSevenDayPercent !== undefined && claudeSevenDayPercent !== null && (
-                                <span className="expanded-usage-badge badge-7d">7d: {Math.round(claudeSevenDayPercent)}%</span>
+                                <span className="expanded-usage-badge badge-7d">
+                                  7d: {Math.round(claudeSevenDayPercent)}%
+                                  {formatSevenDayReset(claudeSevenDayReset) && (
+                                    <span className="reset-info"> · Reset in {formatSevenDayReset(claudeSevenDayReset)}</span>
+                                  )}
+                                </span>
                               )}
                             </div>
                             <div className="expanded-usage-row">
@@ -2330,8 +3452,8 @@ function App() {
                                 <div
                                   className="expanded-usage-bar-fill"
                                   style={{
-                                    width: `${Math.min(displayPercent, 100)}%`,
-                                    background: getUsageGradientStyle(displayPercent, providerId)
+                                    width: `${Math.min(remainingPercent, 100)}%`,
+                                    background: getUsageGradientStyle(remainingPercent, providerId)
                                   }}
                                 />
                               </div>
@@ -2374,27 +3496,154 @@ function App() {
                       )
                     }
 
+                    // Full detailed card for OpenAI with API key
+                    const isOpenAIWithRealData = isOpenAIProvider && hasOpenaiApiKey && isEnabled
+                    // Used/remaining amounts for display
+                    const openaiUsedUsdCard = openaiUsage?.usage_usd ?? 0
+                    const openaiLimitUsdCard = openaiUsage?.limit_usd ?? 0
+                    // Remaining percentage for progress bar (inverted: 100 = full, 0 = empty)
+                    // IMPORTANT: $0/$0 = EMPTY battery
+                    const openaiRemainingPercentCard = openaiUsage?.success
+                      ? (openaiUsage.is_pay_as_you_go
+                        // Pay-as-you-go: if $0 limit and $0 usage = empty battery
+                        ? (openaiLimitUsdCard === 0 && openaiUsedUsdCard === 0
+                          ? 0 // $0/$0 = empty battery
+                          : Math.max(0, 100 - Math.min(openaiUsedUsdCard * 1, 100))) // $100 budget
+                        : (openaiLimitUsdCard > 0
+                          ? Math.max(0, 100 * (1 - openaiUsedUsdCard / openaiLimitUsdCard))
+                          : 0)) // No limit = empty
+                      : 0 // Not loaded = empty (safer)
+
+                    if (isOpenAIWithRealData) {
+                      return (
+                        <div key={providerId} className="expanded-card">
+                          <div className="expanded-card-header">
+                            <label className={`expanded-toggle-mini ${!isEnabled ? 'activable' : ''}`} onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                checked={isEnabled}
+                                onChange={(e) => {
+                                  setEnabledProviders(prev => ({ ...prev, [providerId]: e.target.checked }))
+                                  if (backendProvider) toggleProviderEnabled(providerId, e.target.checked)
+                                }}
+                              />
+                              <span className="expanded-toggle-slider-mini"></span>
+                            </label>
+                            <span className="expanded-card-icon" style={{ background: providerDef.color }}>
+                              {providerDef.icon}
+                            </span>
+                            <span className="expanded-card-name-inline">
+                              <span className="expanded-card-brand">{providerDef.brand}</span>
+                              <span className="expanded-card-plan">{providerDef.name}</span>
+                            </span>
+                            <button
+                              className={`refresh-btn ${isRefreshing ? 'spinning' : ''}`}
+                              onClick={refreshProvider}
+                              title="Refresh"
+                              disabled={isRefreshing}
+                            >
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M23 4v6h-6"></path>
+                                <path d="M1 20v-6h6"></path>
+                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                              </svg>
+                            </button>
+                            <button className="add-credits-btn coming-soon" disabled title="Coming soon">
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                              </svg>
+                              Credits
+                              <span className="coming-soon-badge">Soon</span>
+                            </button>
+                            <button
+                              className="provider-settings-btn"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setProviderSettingsOpen(providerId)
+                              }}
+                              title="Provider settings"
+                            >
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <circle cx="12" cy="12" r="3"></circle>
+                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                              </svg>
+                            </button>
+                            <span className="provider-info-icon" title={`${providerDef.name} - ${providerDef.website}`}>?</span>
+                          </div>
+                          <div className="expanded-usage-block">
+                            <div className="expanded-usage-label-row">
+                              <span className="expanded-usage-label">Usage</span>
+                              {openaiUsage?.success ? (
+                                openaiUsage.is_pay_as_you_go ? (
+                                  <span className="expanded-usage-badge badge-openai">
+                                    ${(openaiUsage.usage_usd ?? 0).toFixed(2)} (Pay as you go)
+                                  </span>
+                                ) : (
+                                  <span className="expanded-usage-badge badge-openai">
+                                    ${(openaiUsage.usage_usd ?? 0).toFixed(2)} / ${openaiUsage.limit_usd?.toFixed(2) ?? '∞'}
+                                  </span>
+                                )
+                              ) : openaiUsage?.error ? (
+                                <span className="expanded-usage-badge badge-openai badge-error" title={openaiUsage.error}>
+                                  Error
+                                </span>
+                              ) : (
+                                <span className="expanded-usage-badge badge-openai">Loading...</span>
+                              )}
+                            </div>
+                            <div className="expanded-usage-row">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+                              </svg>
+                              <div className="expanded-usage-bar-container">
+                                {/* Show minimum red bar (3%) when empty to indicate no credits */}
+                                {openaiRemainingPercentCard <= 0 ? (
+                                  <div
+                                    className="expanded-usage-bar-fill empty"
+                                    style={{
+                                      width: '3%',
+                                      background: '#ef4444' // Red for empty
+                                    }}
+                                  />
+                                ) : (
+                                  <div
+                                    className="expanded-usage-bar-fill"
+                                    style={{
+                                      width: `${Math.min(openaiRemainingPercentCard, 100)}%`,
+                                      background: getUsageGradientStyle(openaiRemainingPercentCard, providerId)
+                                    }}
+                                  />
+                                )}
+                              </div>
+                              {/* No redundant value display - already shown in badge above */}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    }
+
                     // Mini card for other providers
-                    // Only Claude Pro/Max is fully configured - others show "Coming soon"
-                    const isClaudeProMax = providerId === 'claude-pro-max'
-                    const isComingSoon = !isClaudeProMax
+                    // Only 'available' status providers are fully configured
+                    const isAvailable = providerDef.trackingStatus === 'available'
+                    const statusBadge = TRACKING_STATUS_INFO[providerDef.trackingStatus]
 
                     return (
                       <div
                         key={providerId}
-                        className={`provider-card-mini ${!isEnabled ? 'disabled' : ''} ${isConfigured ? 'configured' : ''} ${isComingSoon ? 'coming-soon' : ''}`}
-                        onClick={() => !isComingSoon && setProviderSettingsOpen(providerId)}
+                        className={`provider-card-mini ${!isEnabled ? 'disabled' : ''} ${isConfigured ? 'configured' : ''} ${!isAvailable ? 'coming-soon' : ''}`}
+                        onClick={() => isAvailable && setProviderSettingsOpen(providerId)}
                       >
                         <label
-                          className={`expanded-toggle-mini provider-card-mini-toggle ${isComingSoon ? 'disabled' : ''} ${!isComingSoon && !isEnabled ? 'activable' : ''}`}
+                          className={`expanded-toggle-mini provider-card-mini-toggle ${!isAvailable ? 'disabled' : ''} ${isAvailable && !isEnabled ? 'activable' : ''}`}
                           onClick={(e) => e.stopPropagation()}
                         >
                           <input
                             type="checkbox"
                             checked={isEnabled}
-                            disabled={isComingSoon}
+                            disabled={!isAvailable}
                             onChange={(e) => {
-                              if (!isComingSoon) {
+                              if (isAvailable) {
                                 setEnabledProviders(prev => ({ ...prev, [providerId]: e.target.checked }))
                                 if (backendProvider) toggleProviderEnabled(providerId, e.target.checked)
                               }
@@ -2410,10 +3659,15 @@ function App() {
                           <span className="provider-card-mini-version">{providerDef.name}</span>
                         </div>
                         <div className="provider-card-mini-status">
-                          {isComingSoon ? (
-                            <span className="version-badge coming-soon">Coming soon</span>
+                          {!isAvailable ? (
+                            <span
+                              className="version-badge tracking-status"
+                              style={{ color: statusBadge.color, background: statusBadge.bgColor }}
+                            >
+                              {statusBadge.label}
+                            </span>
                           ) : isEnabled && isConfigured ? (
-                            <span className="provider-card-mini-percent">{displayPercent}%</span>
+                            <span className="provider-card-mini-percent">{remainingPercent}%</span>
                           ) : !isConfigured ? (
                             <span className="version-badge setup">
                               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

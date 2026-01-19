@@ -105,9 +105,9 @@ Go to [**Releases**](https://github.com/PopeYeahWine/MeterAI/releases) and downl
 
 | Platform | File |
 |----------|------|
-| Windows | `MeterAI_1.1.5_x64-setup.exe` or `.msi` |
-| macOS | `MeterAI_1.1.5_x64.dmg` |
-| Linux | `MeterAI_1.1.5_amd64.AppImage` or `.deb` |
+| Windows | `MeterAI_1.2.0_x64-setup.exe` or `.msi` |
+| macOS | `MeterAI_1.2.0_x64.dmg` |
+| Linux | `MeterAI_1.2.0_amd64.AppImage` or `.deb` |
 
 ### Requirements
 
@@ -181,11 +181,12 @@ We're actively developing MeterAI. Here's what's coming:
 - [ ] Multiple account support
 
 ### Future Ideas
-- [ ] Team usage tracking
+- [ ] **Cloud Sync** — Real-time usage sync across all your devices (desktop, mobile). Monitor your AI consumption from anywhere without needing Claude Code installed on every machine. *Premium feature with relay server.*
 - [ ] OAuth login for OpenAI / Google
-- [ ] Buy credits directly from the app
 - [ ] Mobile companion app (iOS/Android)
+- [ ] Team dashboard — Shared usage tracking for teams and organizations
 - [ ] Webhook integrations
+- [ ] Buy credits directly from the app
 
 Have a feature request? [Open an issue](https://github.com/PopeYeahWine/MeterAI/issues)!
 

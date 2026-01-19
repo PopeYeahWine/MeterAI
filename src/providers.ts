@@ -10,6 +10,13 @@ export type ProviderCategory =
 
 export type ProviderTier = 'free' | 'pro' | 'enterprise' | 'api'
 
+// Tracking implementation status
+export type TrackingStatus =
+  | 'available'              // Already implemented (e.g., Claude Pro/Max)
+  | 'coming-soon'            // Faisable - Official API available, implementation planned
+  | 'roadmap'                // Complexe - Requires workarounds or limited API
+  | 'partnership'            // Manuel/Impossible - Awaiting or seeking partnership
+
 export interface ProviderDefinition {
   id: string
   brand: string        // Company/Brand name (e.g., "Anthropic", "OpenAI")
@@ -22,6 +29,7 @@ export interface ProviderDefinition {
   hasUsageApi: boolean
   usageMethod?: string // How usage is tracked (e.g., "oauth", "api-key", "none")
   parentId?: string    // For grouping related providers (e.g., all Claude variants)
+  trackingStatus: TrackingStatus // Implementation status for usage tracking
 }
 
 // All supported AI providers - versions with same config are merged
@@ -40,9 +48,10 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     website: 'https://claude.ai',
     hasUsageApi: true,
     usageMethod: 'oauth',
-    parentId: 'anthropic'
+    parentId: 'anthropic',
+    trackingStatus: 'available'
   },
-  // Claude API (separate - uses API key billing)
+  // Claude API (separate - uses API key billing) - Faisable
   {
     id: 'claude-api',
     brand: 'Anthropic',
@@ -54,10 +63,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     website: 'https://anthropic.com',
     hasUsageApi: true,
     usageMethod: 'api-key',
-    parentId: 'anthropic'
+    parentId: 'anthropic',
+    trackingStatus: 'coming-soon'
   },
 
-  // OpenAI (Plus/Pro merged - similar subscription tracking)
+  // OpenAI (Plus/Pro merged - NO official API for subscription usage) - Impossible
   {
     id: 'chatgpt-plus-pro',
     brand: 'OpenAI',
@@ -67,11 +77,12 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     category: 'coding',
     tier: 'pro',
     website: 'https://chat.openai.com',
-    hasUsageApi: true,
-    usageMethod: 'api-key',
-    parentId: 'openai'
+    hasUsageApi: false,
+    usageMethod: 'none',
+    parentId: 'openai',
+    trackingStatus: 'partnership'
   },
-  // OpenAI API (separate billing)
+  // OpenAI API (separate billing) - Available
   {
     id: 'openai-api',
     brand: 'OpenAI',
@@ -83,10 +94,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     website: 'https://openai.com',
     hasUsageApi: true,
     usageMethod: 'api-key',
-    parentId: 'openai'
+    parentId: 'openai',
+    trackingStatus: 'available'
   },
 
-  // GitHub Copilot (Individual/Business merged)
+  // GitHub Copilot (Individual/Business merged) - Complexe (API v7 avec limites)
   {
     id: 'copilot',
     brand: 'GitHub',
@@ -97,10 +109,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://github.com/features/copilot',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'roadmap'
   },
 
-  // Cursor AI (Pro only - no free tier tracking)
+  // Cursor AI (Pro only - dashboard only) - Manuel
   {
     id: 'cursor-pro',
     brand: 'Cursor',
@@ -111,10 +124,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://cursor.sh',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
-  // Tabnine
+  // Tabnine - Impossible (no public API)
   {
     id: 'tabnine-pro',
     brand: 'Tabnine',
@@ -125,10 +139,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://tabnine.com',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
-  // Amazon Q
+  // Amazon Q - Complexe (via AWS Billing API, config requise)
   {
     id: 'amazon-q',
     brand: 'Amazon',
@@ -139,10 +154,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://aws.amazon.com/q/developer',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'roadmap'
   },
 
-  // Replit
+  // Replit - Impossible (no public API for usage)
   {
     id: 'replit-core',
     brand: 'Replit',
@@ -153,12 +169,13 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://replit.com',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
   // ========== CHAT / GENERAL ASSISTANT ==========
 
-  // Google Gemini (Advanced only)
+  // Google Gemini (Advanced only) - Manuel (dashboard only)
   {
     id: 'gemini-advanced',
     brand: 'Google',
@@ -169,10 +186,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://gemini.google.com',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
-  // Mistral (Le Chat Pro/API merged)
+  // Mistral (Le Chat Pro/API merged) - Faisable pour API
   {
     id: 'mistral',
     brand: 'Mistral',
@@ -183,10 +201,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://chat.mistral.ai',
     hasUsageApi: true,
-    usageMethod: 'api-key'
+    usageMethod: 'api-key',
+    trackingStatus: 'coming-soon'
   },
 
-  // Perplexity
+  // Perplexity - Manuel (dashboard only, API is separate)
   {
     id: 'perplexity-pro',
     brand: 'Perplexity',
@@ -197,10 +216,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://perplexity.ai',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
-  // xAI Grok
+  // xAI Grok - Manuel (dashboard only)
   {
     id: 'grok',
     brand: 'xAI',
@@ -211,10 +231,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://x.ai',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
-  // Poe
+  // Poe - Impossible (no public API)
   {
     id: 'poe',
     brand: 'Quora',
@@ -225,12 +246,13 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://poe.com',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
   // ========== IMAGE GENERATION ==========
 
-  // Midjourney (Standard/Pro merged)
+  // Midjourney (Standard/Pro merged) - Manuel (dashboard only)
   {
     id: 'midjourney',
     brand: 'Midjourney',
@@ -241,10 +263,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://midjourney.com',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
-  // DALL-E (via ChatGPT or API)
+  // DALL-E (via ChatGPT - no separate tracking) - Impossible
   {
     id: 'dalle',
     brand: 'OpenAI',
@@ -254,11 +277,12 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     category: 'image',
     tier: 'pro',
     website: 'https://openai.com/dall-e-3',
-    hasUsageApi: true,
-    usageMethod: 'api-key'
+    hasUsageApi: false,
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
-  // Stable Diffusion
+  // Stable Diffusion - Faisable (API officielle)
   {
     id: 'stability',
     brand: 'Stability',
@@ -269,10 +293,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://stability.ai',
     hasUsageApi: true,
-    usageMethod: 'api-key'
+    usageMethod: 'api-key',
+    trackingStatus: 'coming-soon'
   },
 
-  // Leonardo
+  // Leonardo - Manuel (dashboard only)
   {
     id: 'leonardo',
     brand: 'Leonardo',
@@ -283,10 +308,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://leonardo.ai',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
-  // Ideogram
+  // Ideogram - Manuel (dashboard only)
   {
     id: 'ideogram',
     brand: 'Ideogram',
@@ -297,10 +323,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://ideogram.ai',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
-  // Adobe Firefly
+  // Adobe Firefly - Impossible (inclus dans CC, pas de tracking séparé)
   {
     id: 'firefly',
     brand: 'Adobe',
@@ -311,10 +338,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://firefly.adobe.com',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
-  // Flux
+  // Flux - Complexe (API via Replicate/Fal.ai, pas direct)
   {
     id: 'flux',
     brand: 'Black Forest',
@@ -325,12 +353,13 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'api',
     website: 'https://blackforestlabs.ai',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'roadmap'
   },
 
   // ========== VIDEO GENERATION ==========
 
-  // Runway (Pro/Unlimited merged)
+  // Runway (Pro/Unlimited merged) - Faisable (API officielle)
   {
     id: 'runway',
     brand: 'Runway',
@@ -340,11 +369,12 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     category: 'video',
     tier: 'pro',
     website: 'https://runway.ml',
-    hasUsageApi: false,
-    usageMethod: 'none'
+    hasUsageApi: true,
+    usageMethod: 'api-key',
+    trackingStatus: 'coming-soon'
   },
 
-  // Pika
+  // Pika - Manuel (dashboard only)
   {
     id: 'pika',
     brand: 'Pika',
@@ -355,10 +385,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://pika.art',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
-  // Luma
+  // Luma - Manuel (dashboard only)
   {
     id: 'luma',
     brand: 'Luma',
@@ -369,10 +400,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://lumalabs.ai',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
-  // Kling
+  // Kling - Impossible (Chinese platform, no international API)
   {
     id: 'kling',
     brand: 'Kuaishou',
@@ -383,10 +415,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://klingai.com',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
-  // Sora
+  // Sora - Impossible (inclus dans ChatGPT Plus, pas de tracking séparé)
   {
     id: 'sora',
     brand: 'OpenAI',
@@ -397,12 +430,13 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://openai.com/sora',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
   // ========== AUDIO / MUSIC ==========
 
-  // Suno (Pro/Premier merged)
+  // Suno (Pro/Premier merged) - Complexe (API non-officielle)
   {
     id: 'suno',
     brand: 'Suno',
@@ -413,10 +447,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://suno.ai',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'roadmap'
   },
 
-  // Udio
+  // Udio - Manuel (dashboard only)
   {
     id: 'udio',
     brand: 'Udio',
@@ -427,10 +462,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://udio.com',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 
-  // ElevenLabs (Creator/Pro merged)
+  // ElevenLabs (Creator/Pro merged) - Faisable (API officielle)
   {
     id: 'elevenlabs',
     brand: 'ElevenLabs',
@@ -441,10 +477,11 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://elevenlabs.io',
     hasUsageApi: true,
-    usageMethod: 'api-key'
+    usageMethod: 'api-key',
+    trackingStatus: 'coming-soon'
   },
 
-  // Mubert
+  // Mubert - Impossible (no public API for usage)
   {
     id: 'mubert',
     brand: 'Mubert',
@@ -455,7 +492,8 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     tier: 'pro',
     website: 'https://mubert.com',
     hasUsageApi: false,
-    usageMethod: 'none'
+    usageMethod: 'none',
+    trackingStatus: 'partnership'
   },
 ]
 
@@ -509,4 +547,33 @@ export const getAllCategories = (): ProviderCategory[] => {
 // Get the main/default provider for a parent ID (for backward compatibility)
 export const getMainProvider = (parentId: string): ProviderDefinition | undefined => {
   return AI_PROVIDERS.find(p => p.parentId === parentId || p.id === parentId)
+}
+
+// Badge display info for tracking status
+export const TRACKING_STATUS_INFO: Record<TrackingStatus, { label: string; color: string; bgColor: string }> = {
+  'available': {
+    label: 'Available',
+    color: '#22c55e',      // green
+    bgColor: 'rgba(34, 197, 94, 0.15)'
+  },
+  'coming-soon': {
+    label: 'Coming soon!',
+    color: '#f97316',      // orange
+    bgColor: 'rgba(249, 115, 22, 0.15)'
+  },
+  'roadmap': {
+    label: 'Planned',
+    color: '#3b82f6',      // blue
+    bgColor: 'rgba(59, 130, 246, 0.15)'
+  },
+  'partnership': {
+    label: 'Awaiting partnership',
+    color: '#8b5cf6',      // violet
+    bgColor: 'rgba(139, 92, 246, 0.15)'
+  }
+}
+
+// Get badge info for a provider
+export const getTrackingStatusBadge = (status: TrackingStatus) => {
+  return TRACKING_STATUS_INFO[status]
 }
