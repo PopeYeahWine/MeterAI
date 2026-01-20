@@ -88,7 +88,19 @@
       "Bash(netstat:*)",
       "Bash(node:*)",
       "Bash(npm run tauri:*)",
-      "Bash(npm run version:minor:*)"
+      "Bash(npm run version:minor:*)",
+      "Bash(ls -la \"c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\\\\.github\\\\workflows\"\" 2>/dev/null || echo \"No workflows found \")",
+      "Bash(git -C \"c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\" log --oneline -20)",
+      "Bash(git -C \"c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\" show 5bdc3c6 --stat)",
+      "Bash(git -C \"c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\" log --grep=\"SignPath\" --oneline)",
+      "Bash(git -C \"c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\" log -p --all -S \"Signed by SignPath\" -- src/App.tsx)",
+      "Bash(git -C \"c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\" log --all --oneline -- src/App.tsx)",
+      "Bash(git -C \"c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\" log -p --all -S \"HPSC SAS\")",
+      "Bash(git -C \"c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\" log --all --oneline)",
+      "Bash(git -C \"c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\" log --all --date=short --pretty=format:\"%h %ad %s\")",
+      "Bash(git -C \"c:\\\\Users\\\\pierr\\\\source\\\\repos\\\\PopeYeahWine\\\\MeterAI\" show 456c8f6:src/App.tsx)",
+      "Bash(reg add \"HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\" /v MeterAI /t REG_SZ /d \"C:\\\\Users\\\\pierr\\\\AppData\\\\Local\\\\MeterAI\\\\MeterAI.exe\" /f)",
+      "Bash(reg query \"HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\" /v MeterAI)"
     ]
   }
 }
