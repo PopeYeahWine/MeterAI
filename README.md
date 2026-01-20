@@ -86,8 +86,8 @@
 
 | Provider | Auth Method |
 |----------|-------------|
-| **Claude Pro/Max** | Auto-detect (Claude Code OAuth) |
-| **OpenAI API** | API Key |
+| <img src="https://cdn.simpleicons.org/anthropic/D97706" width="16" height="16" /> **Claude Pro/Max** | Auto-detect (Claude Code OAuth) |
+| <img src="https://cdn.simpleicons.org/openai/10A37F" width="16" height="16" /> **OpenAI API** | API Key |
 
 ---
 
@@ -170,9 +170,9 @@ We're actively developing MeterAI. Below is our comprehensive development plan.
 
 | Feature | Status | Description |
 |---------|--------|-------------|
-| Claude API | 🔜 Coming Soon | API key usage tracking for Anthropic API |
-| GitHub Copilot | 🔜 Planned | OAuth integration for Copilot subscription usage |
-| Google Gemini | 🔜 Planned | OAuth integration for Gemini API |
+| <img src="https://cdn.simpleicons.org/anthropic/D97706" width="16" height="16" /> Claude API | 🔜 Coming Soon | API key usage tracking for Anthropic API |
+| <img src="https://cdn.simpleicons.org/github/FFFFFF" width="16" height="16" /> GitHub Copilot | 🔜 Planned | OAuth integration for Copilot subscription usage |
+| <img src="https://cdn.simpleicons.org/googlegemini/8E75B2" width="16" height="16" /> Google Gemini | 🔜 Planned | OAuth integration for Gemini API |
 | Multiple accounts | 🔜 Planned | Support tracking multiple accounts per provider |
 
 ---
