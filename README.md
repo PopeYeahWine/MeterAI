@@ -87,9 +87,9 @@
 | Provider | Status | Auth Method |
 |----------|--------|-------------|
 | **Claude Pro/Max** | ✅ Available | Auto-detect (Claude Code OAuth) |
+| **OpenAI API** | ✅ Available | API Key |
 | Claude API | 🔜 Coming Soon | API Key |
 | OpenAI ChatGPT Plus/Pro | 🔜 Coming Soon | OAuth |
-| OpenAI API | 🔜 Coming Soon | API Key |
 | GitHub Copilot | 🔜 Coming Soon | OAuth |
 | Google Gemini | 🔜 Coming Soon | OAuth |
 | Midjourney | 🔜 Coming Soon | — |
@@ -101,18 +101,21 @@
 
 ### Download
 
-Go to [**Releases**](https://github.com/PopeYeahWine/MeterAI/releases) and download the installer for your platform:
+| Platform | File | Download |
+|----------|------|----------|
+| Windows | `MeterAI_1.2.0_x64-setup.exe` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.2.0/MeterAI_1.2.0_x64-setup.exe) |
+| Windows | `MeterAI_1.2.0_x64_en-US.msi` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.2.0/MeterAI_1.2.0_x64_en-US.msi) |
+| macOS (Intel) | `MeterAI_1.2.0_x64.dmg` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.2.0/MeterAI_1.2.0_x64.dmg) |
+| macOS (Apple Silicon) | `MeterAI_1.2.0_aarch64.dmg` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.2.0/MeterAI_1.2.0_aarch64.dmg) |
+| Linux | `MeterAI_1.2.0_amd64.AppImage` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.2.0/MeterAI_1.2.0_amd64.AppImage) |
+| Linux | `MeterAI_1.2.0_amd64.deb` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.2.0/MeterAI_1.2.0_amd64.deb) |
 
-| Platform | File |
-|----------|------|
-| Windows | `MeterAI_1.2.0_x64-setup.exe` or `.msi` |
-| macOS | `MeterAI_1.2.0_x64.dmg` |
-| Linux | `MeterAI_1.2.0_amd64.AppImage` or `.deb` |
+> You may see a Windows SmartScreen warning when running the installer. This is normal for applications pending code signing approval. See [Code Signing Policy](#code-signing-policy) below.
 
 ### Requirements
 
 - **Windows**: Windows 10/11 (x64). WebView2 Runtime (usually pre-installed)
-- **macOS**: macOS 10.15+ (Intel & Apple Silicon via Rosetta)
+- **macOS**: macOS 10.15+ (Intel & Apple Silicon)
 - **Linux**: Most distributions with GTK3 and WebKit2GTK
 
 ---
@@ -163,32 +166,93 @@ MeterAI is designed with privacy as a core principle:
 
 ---
 
-## Roadmap
+## Development Roadmap
 
-We're actively developing MeterAI. Here's what's coming:
+We're actively developing MeterAI. Below is our comprehensive development plan.
 
-### In Progress
-- [ ] OpenAI ChatGPT Plus/Pro tracking
-- [ ] Claude API usage tracking
-- [ ] GitHub Copilot integration
+---
 
-### Planned
-- [ ] Google Gemini support
-- [ ] VS Code extension
-- [ ] Import/export configuration
-- [ ] Notification customization (sounds, schedules)
-- [ ] Usage history and statistics
-- [ ] Multiple account support
+### Provider Integrations
 
-### Future Ideas
-- [ ] **Cloud Sync** — Real-time usage sync across all your devices (desktop, mobile). Monitor your AI consumption from anywhere without needing Claude Code installed on every machine. *Premium feature with relay server.*
-- [ ] OAuth login for OpenAI / Google
-- [ ] Mobile companion app (iOS/Android)
-- [ ] Team dashboard — Shared usage tracking for teams and organizations
-- [ ] Webhook integrations
-- [ ] Buy credits directly from the app
+| Feature | Status | Description |
+|---------|--------|-------------|
+| Claude Pro/Max | ✅ Done | OAuth-based tracking via Claude Code credentials |
+| OpenAI API | ✅ Done | API key billing and usage tracking |
+| Claude API | 🔜 Coming Soon | API key usage tracking for Anthropic API |
+| GitHub Copilot | 🔜 Planned | OAuth integration for Copilot subscription usage |
+| Google Gemini | 🔜 Planned | OAuth integration for Gemini API |
+| Multiple accounts | 🔜 Planned | Support tracking multiple accounts per provider |
 
-Have a feature request? [Open an issue](https://github.com/PopeYeahWine/MeterAI/issues)!
+---
+
+### Usage Analytics & Data
+
+| Feature | Priority | Description |
+|---------|----------|-------------|
+| **Usage history graph** | P1 | Sparkline or mini-chart displaying usage evolution over the past 24 hours or 7 days. Visualize trends at a glance directly in the widget. |
+| **Depletion prediction** | P1 | Intelligent estimation of when your usage limit will be reached based on current consumption rate. Example: "At this pace, limit reached in 2h 15m". |
+| **Budget tracking** | P2 | Define daily or monthly spending budgets in $ for paid APIs. Receive alerts when approaching or exceeding your budget. |
+| **Export data (CSV/JSON)** | P2 | Export your complete usage history for external analysis, reporting, or backup purposes. |
+| **Import/export config** | P2 | Backup and restore your entire configuration (thresholds, providers, settings) to easily migrate between devices. |
+
+---
+
+### Interface & User Experience
+
+| Feature | Priority | Description |
+|---------|----------|-------------|
+| **Dark/Light themes** | P1 | Theme toggle with support for dark mode, light mode, and custom color schemes. Adjust transparency and accent colors. |
+| **Mini-mode** | P1 | Ultra-compact display showing only a colored circle indicator. Percentage and details appear on hover. Minimal screen footprint. |
+| **Multiple widgets** | P2 | Ability to detach and display multiple independent widgets, one per provider. Position them anywhere on screen. |
+| **Smooth animations** | P2 | Fluid CSS transitions when state changes occur (e.g., warning → critical). Visual feedback for user actions. |
+| **Global hotkeys** | P2 | System-wide keyboard shortcuts to show/hide the widget, force refresh data, or quickly switch between providers. |
+
+---
+
+### Notifications & Alerts
+
+| Feature | Priority | Description |
+|---------|----------|-------------|
+| **Custom sounds** | P1 | Configurable audio alerts per threshold level. Different sounds for warning vs critical states. Option to mute specific providers. |
+| **Scheduled summaries** | P2 | Periodic notification summaries. Example: "Daily recap at 6 PM" showing your usage across all providers for the day. |
+| **Discord/Slack webhooks** | P2 | Send alerts to external services via webhooks. Get notified on Discord, Slack, or Microsoft Teams when thresholds are crossed. |
+
+---
+
+### Security & Reliability
+
+| Feature | Priority | Description |
+|---------|----------|-------------|
+| **Local data encryption** | P1 | Encrypt the data.json file using OS-level protection (DPAPI on Windows, Keychain on macOS). Data remains protected even if the file is copied. |
+| **Integrity verification** | P2 | SHA-256 hash verification of critical files on startup. Detect any corruption or unauthorized modification of configuration. |
+| **Log rotation** | P2 | Automatic rotation and cleanup of log files to prevent disk space accumulation. Configurable retention period. |
+
+---
+
+### Integrations & Ecosystem
+
+| Feature | Priority | Description |
+|---------|----------|-------------|
+| **VS Code extension** | P1 | Display your AI usage directly in the VS Code status bar. Quick access to usage stats without leaving your editor. |
+| **Local REST API** | P2 | Expose a localhost HTTP endpoint allowing other applications to query your usage data programmatically. |
+| **Stream Deck plugin** | P3 | Elgato Stream Deck integration displaying real-time usage on a physical button with color-coded status. |
+
+---
+
+### Premium Features (Future)
+
+| Feature | Description |
+|---------|-------------|
+| **Cloud Sync** | Real-time usage synchronization across all your devices (desktop, mobile, web). Monitor your AI consumption from anywhere without needing Claude Code installed on every machine. Access your dashboard from any browser. |
+| **Mobile app** | Companion application for iOS and Android. Check your usage on the go, receive push notifications, and manage settings remotely. |
+| **Team dashboard** | Shared usage tracking for teams and organizations. Aggregate usage across team members, set team-wide budgets, and generate reports. |
+| **Buy credits** | Purchase AI credits (Anthropic, OpenAI) directly from the MeterAI interface. Seamless top-up when running low. |
+
+---
+
+### Feature Requests
+
+Have an idea? [Open an issue](https://github.com/PopeYeahWine/MeterAI/issues) with the `enhancement` label!
 
 ---
 
@@ -229,9 +293,20 @@ If MeterAI helps you stay productive, consider supporting development:
 
 ---
 
-## Code signing policy
+## Code Signing Policy
 
-Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+MeterAI has applied for free open-source code signing through [SignPath Foundation](https://signpath.org).
+
+**Current status:** Pending approval
+
+Once approved, Windows releases will be signed with a certificate provided by SignPath Foundation. Until then, you may see SmartScreen warnings when installing — this is expected for unsigned applications.
+
+### Verification (after approval)
+
+To verify a signed release:
+1. Right-click the `.exe` or `.msi` file
+2. Select **Properties** → **Digital Signatures** tab
+3. Confirm the signature shows "SignPath Foundation"
 
 ### Team roles
 
@@ -241,6 +316,8 @@ Free code signing provided by [SignPath.io](https://signpath.io), certificate by
 ### Privacy policy
 
 This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+
+For detailed privacy information, see [PRIVACY.md](PRIVACY.md).
 
 ---
 

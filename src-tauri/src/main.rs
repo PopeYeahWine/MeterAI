@@ -946,56 +946,62 @@ fn get_autostart_enabled() -> bool {
 }
 
 /// Set autostart enabled/disabled (Windows registry)
-/// Uses the installed application path, not the current exe (which may be a dev build)
+/// In debug mode: no-op (toggle works in UI but doesn't modify registry)
+/// In release mode: modifies registry to point to installed application
 #[tauri::command]
 fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
+    // In debug mode, do nothing - prevents dev builds from polluting the registry
+    #[cfg(debug_assertions)]
     {
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let run_key = hkcu
-            .open_subkey_with_flags(
-                "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                KEY_SET_VALUE | KEY_QUERY_VALUE,
-            )
-            .map_err(|e| e.to_string())?;
-
-        if enabled {
-            // Get the installed application path (not the dev build path)
-            // The installed app is in %LOCALAPPDATA%\MeterAI\MeterAI.exe
-            let exe_path = if cfg!(debug_assertions) {
-                // In debug mode, warn but still use current exe for testing
-                let current = std::env::current_exe().map_err(|e| e.to_string())?;
-                eprintln!("Warning: Setting autostart in debug mode. Path: {:?}", current);
-                current
-            } else {
-                // In release mode, prefer the standard install location
-                let current = std::env::current_exe().map_err(|e| e.to_string())?;
-
-                // Check if we're running from the installed location or a portable location
-                // If the path contains "target\debug" or "target\release", it's a dev build
-                let path_str = current.to_string_lossy().to_lowercase();
-                if path_str.contains("target\\debug") || path_str.contains("target\\release") || path_str.contains("target/debug") || path_str.contains("target/release") {
-                    return Err("Cannot set autostart from development build. Please install the application first.".to_string());
-                }
-                current
-            };
-
-            run_key
-                .set_value("MeterAI", &exe_path.to_string_lossy().to_string())
-                .map_err(|e| e.to_string())?;
-        } else {
-            // Ignore error if value doesn't exist
-            run_key.delete_value("MeterAI").ok();
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        // On non-Windows platforms, just ignore for now
         let _ = enabled;
+        return Ok(());
     }
 
-    Ok(())
+    #[cfg(not(debug_assertions))]
+    {
+        #[cfg(target_os = "windows")]
+        {
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            let run_key = hkcu
+                .open_subkey_with_flags(
+                    "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                    KEY_SET_VALUE | KEY_QUERY_VALUE,
+                )
+                .map_err(|e| e.to_string())?;
+
+            if enabled {
+                // Use the standard install location: %LOCALAPPDATA%\MeterAI\MeterAI.exe
+                let local_app_data = std::env::var("LOCALAPPDATA")
+                    .map_err(|_| "Could not find LOCALAPPDATA environment variable")?;
+                let installed_path = std::path::PathBuf::from(&local_app_data)
+                    .join("MeterAI")
+                    .join("MeterAI.exe");
+
+                // Check if the installed version exists
+                if !installed_path.exists() {
+                    return Err(format!(
+                        "MeterAI is not installed. Please install the application first.\nExpected path: {}",
+                        installed_path.display()
+                    ));
+                }
+
+                run_key
+                    .set_value("MeterAI", &installed_path.to_string_lossy().to_string())
+                    .map_err(|e| e.to_string())?;
+            } else {
+                // Ignore error if value doesn't exist
+                run_key.delete_value("MeterAI").ok();
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            // On non-Windows platforms, just ignore for now
+            let _ = enabled;
+        }
+
+        Ok(())
+    }
 }
 
 // ============== CONFIG DETECTION STATUS ==============
