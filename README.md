@@ -84,16 +84,10 @@
 
 ## Supported Providers
 
-| Provider | Status | Auth Method |
-|----------|--------|-------------|
-| **Claude Pro/Max** | ✅ Available | Auto-detect (Claude Code OAuth) |
-| **OpenAI API** | ✅ Available | API Key |
-| Claude API | 🔜 Coming Soon | API Key |
-| OpenAI ChatGPT Plus/Pro | 🔜 Coming Soon | OAuth |
-| GitHub Copilot | 🔜 Coming Soon | OAuth |
-| Google Gemini | 🔜 Coming Soon | OAuth |
-| Midjourney | 🔜 Coming Soon | — |
-| And 25+ more... | 🔜 Planned | — |
+| Provider | Auth Method |
+|----------|-------------|
+| **Claude Pro/Max** | Auto-detect (Claude Code OAuth) |
+| **OpenAI API** | API Key |
 
 ---
 
@@ -176,8 +170,6 @@ We're actively developing MeterAI. Below is our comprehensive development plan.
 
 | Feature | Status | Description |
 |---------|--------|-------------|
-| Claude Pro/Max | ✅ Done | OAuth-based tracking via Claude Code credentials |
-| OpenAI API | ✅ Done | API key billing and usage tracking |
 | Claude API | 🔜 Coming Soon | API key usage tracking for Anthropic API |
 | GitHub Copilot | 🔜 Planned | OAuth integration for Copilot subscription usage |
 | Google Gemini | 🔜 Planned | OAuth integration for Gemini API |
