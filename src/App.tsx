@@ -1940,8 +1940,8 @@ function App() {
 
     // For nearly empty battery (<5%), show a small red bar at the start
     const showLowBatteryIndicator = remaining < 5 && remaining > 0 && !disabled
-    // Critical battery (<2%) - will blink
-    const isCriticalBattery = remaining < 2 && remaining > 0 && !disabled
+    // Critical battery (<=5%) - will blink
+    const isCriticalBattery = remaining <= 5 && remaining > 0 && !disabled
 
     // Outline gradient ID - always blue to green regardless of fill level
     const outlineGradientId = `batteryOutline-${uniqueId}`
@@ -1966,12 +1966,12 @@ function App() {
         {/* Battery cap - green end of gradient */}
         <rect x="28" y="5" width="3" height="6" rx="1" fill={disabled ? '#4a4a5a' : '#22F0B6'} />
         {/* Battery fill - width based on remaining percentage */}
-        {/* Critical battery (<2%): smaller red bar that blinks */}
+        {/* Critical battery (<=5%): smaller red bar that blinks */}
         {isCriticalBattery && (
           <rect x="3" y="4" width="2" height="8" rx="1" fill="#ef4444" className="battery-critical-blink" />
         )}
-        {/* Low battery (2-5%): normal fill */}
-        {remaining >= 2 && remaining > 0 && (
+        {/* Normal battery (>5%): gradient fill */}
+        {remaining > 5 && (
           <rect x="3" y="4" width={Math.max(fillWidth * 0.32, 2)} height="8" rx="1.5" fill={`url(#${gradientId})`} />
         )}
         {/* Empty battery indicator - small red bar when at 0% */}
@@ -1992,6 +1992,36 @@ function App() {
       return resetDate.getTime() > now.getTime()
     } catch {
       return false
+    }
+  }
+
+  // Calculate effective Claude usage percent, accounting for reset time
+  // If reset time has passed, usage resets to 0% (battery goes back to 100%)
+  // This maintains a local counter that syncs with the token but also calculates independently
+  const getEffectiveClaudeUsedPercent = (): number => {
+    // If no valid data, return 0
+    if (!claudeCodeUsage?.success) return 0
+
+    const tokenPercent = claudeCodeUsage.five_hour_percent ?? 0
+    const resetStr = claudeCodeUsage.five_hour_reset
+
+    // If no reset time, just return the token value
+    if (!resetStr) return tokenPercent
+
+    try {
+      const resetDate = new Date(resetStr)
+      const now = new Date()
+
+      // If reset time has passed, the usage has reset to 0%
+      if (now.getTime() > resetDate.getTime()) {
+        console.log('MeterAI: Reset time has passed, usage should be 0%')
+        return 0
+      }
+
+      // Reset time is in the future, use the token value
+      return tokenPercent
+    } catch {
+      return tokenPercent
     }
   }
 
@@ -2610,9 +2640,10 @@ function App() {
     // OpenAI is configured if we have an API key (use the state we track)
     const isOpenaiConfigured = hasOpenaiApiKey
 
-    // Use Claude Code real data if available - this is the USED percentage
-    const claudeUsedPercent = claudeCodeUsage?.success && claudeCodeUsage?.five_hour_percent !== null
-      ? Math.round(claudeCodeUsage.five_hour_percent)
+    // Use effective Claude usage percent - accounts for reset time passing
+    // This is the USED percentage (0% = nothing used, 100% = fully used)
+    const claudeUsedPercent = claudeCodeUsage?.success
+      ? Math.round(getEffectiveClaudeUsedPercent())
       : anthropicUsage.percent
 
     // For battery display: REMAINING percentage (100 = full, 0 = empty)
@@ -3003,8 +3034,10 @@ function App() {
     // OpenAI is configured if we have an API key
     const isOpenaiConfigured = hasOpenaiApiKey
 
-    // Use Claude Code real data if available - this is the USED percentage
-    const claudeFiveHourUsedPercent = claudeCodeUsage?.five_hour_percent ?? anthropicUsageLocal.percent
+    // Use effective Claude usage percent - accounts for reset time passing
+    const claudeFiveHourUsedPercent = claudeCodeUsage?.success
+      ? getEffectiveClaudeUsedPercent()
+      : anthropicUsageLocal.percent
     const claudeSevenDayPercent = claudeCodeUsage?.seven_day_percent
     const claudeSevenDayReset = claudeCodeUsage?.seven_day_reset
 

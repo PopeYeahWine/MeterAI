@@ -30,6 +30,11 @@ body {
   font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
   background: transparent;
   color: var(--text-primary);
+  /* Force GPU acceleration to prevent transparency loss */
+  -webkit-transform: translateZ(0);
+  transform: translateZ(0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
 }
 
 .widget-container {
@@ -43,6 +48,11 @@ body {
   min-width: 320px;
   height: 100vh;
   max-height: 100vh;
+  /* Force GPU layer to prevent transparency loss in corners */
+  -webkit-transform: translateZ(0);
+  transform: translateZ(0);
+  will-change: transform;
+  isolation: isolate;
 }
 
 /* Header draggable */
@@ -489,6 +499,11 @@ body {
   flex-wrap: wrap;
   gap: 8px;
   cursor: move !important;
+  /* Force GPU layer to prevent transparency loss in corners */
+  -webkit-transform: translateZ(0);
+  transform: translateZ(0);
+  will-change: transform;
+  isolation: isolate;
 }
 
 /* Banner brand is the main drag zone */
