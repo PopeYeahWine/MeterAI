@@ -98,6 +98,22 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     trackingStatus: 'available'
   },
 
+  // OpenAI Codex (ChatGPT plans) - Local usage via Codex logs
+  {
+    id: 'openai-codex',
+    brand: 'OpenAI',
+    name: 'Codex (Free/Go/Plus/Pro/Business/Edu/Enterprise)',
+    icon: 'Cx',
+    color: '#10a37f',
+    category: 'coding',
+    tier: 'pro',
+    website: 'https://openai.com/codex',
+    hasUsageApi: true,
+    usageMethod: 'local-log',
+    parentId: 'openai',
+    trackingStatus: 'available'
+  },
+
   // GitHub Copilot (Individual/Business merged) - Complexe (API v7 avec limites)
   {
     id: 'copilot',

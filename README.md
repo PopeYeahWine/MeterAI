@@ -40,6 +40,7 @@
 
 - **Always-on-Top Widget** — Floating, draggable bar that stays visible while you work
 - **Claude Code Integration** — Automatic OAuth-based tracking for Claude Pro/Max (no API key needed)
+- **OpenAI Codex Integration** — Automatic local token-based tracking for ChatGPT Free/Go/Pro and compatible Codex plans
 - **Rolling Window Timer** — Real-time countdown to your next usage reset (5-hour window)
 - **Color Thresholds** — Visual indicators: green (OK), yellow (caution), orange (warning), red (critical)
 - **Desktop Notifications** — Configurable alerts when you approach usage limits
@@ -53,8 +54,9 @@
 ## How It Works
 
 1. **For Claude Pro/Max users**: MeterAI automatically detects your Claude Code credentials and fetches your real usage data via Anthropic's OAuth API
-2. **For other providers**: Configure your API keys in the settings panel to enable tracking
-3. **The widget displays**:
+2. **For OpenAI Codex users**: MeterAI reads your local Codex session/token data and displays real usage windows without requiring an API key
+3. **For other providers**: Configure your API keys in the settings panel to enable tracking
+4. **The widget displays**:
    - Current usage percentage with color-coded status
    - Time remaining until reset (rolling 5-hour window for Claude)
    - Quick access to expand/collapse and configure
@@ -87,6 +89,7 @@
 | Provider | Auth Method |
 |----------|-------------|
 | <img src="assets/icons/claude.svg" width="16" height="16" /> **Claude Pro/Max** | Auto-detect (Claude Code OAuth) |
+| <img src="assets/icons/openai.svg" width="16" height="16" /> **OpenAI Codex** | Auto-detect (local Codex token/session) |
 | <img src="assets/icons/openai.svg" width="16" height="16" /> **OpenAI API** | API Key |
 
 ---
@@ -97,12 +100,12 @@
 
 | Platform | File | Download |
 |----------|------|----------|
-| Windows | `MeterAI_1.2.1_x64-setup.exe` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.2.0/MeterAI_1.2.1_x64-setup.exe) |
-| Windows | `MeterAI_1.2.0_x64_en-US.msi` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.2.0/MeterAI_1.2.0_x64_en-US.msi) |
-| macOS (Intel) | `MeterAI_1.2.1_x64.dmg` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.2.0/MeterAI_1.2.1_x64.dmg) |
-| macOS (Apple Silicon) | `MeterAI_1.2.0_aarch64.dmg` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.2.0/MeterAI_1.2.0_aarch64.dmg) |
-| Linux | `MeterAI_1.2.1_amd64.AppImage` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.2.0/MeterAI_1.2.1_amd64.AppImage) |
-| Linux | `MeterAI_1.2.1_amd64.deb` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.2.0/MeterAI_1.2.1_amd64.deb) |
+| Windows | `MeterAI_1.3.0_x64-setup.exe` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.3.0_x64-setup.exe) |
+| Windows | `MeterAI_1.3.0_x64_en-US.msi` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.3.0_x64_en-US.msi) |
+| macOS (Intel) | `MeterAI_1.3.0_x64.dmg` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.3.0_x64.dmg) |
+| macOS (Apple Silicon) | `MeterAI_1.3.0_aarch64.dmg` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.3.0_aarch64.dmg) |
+| Linux | `MeterAI_1.3.0_amd64.AppImage` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.3.0_amd64.AppImage) |
+| Linux | `MeterAI_1.3.0_amd64.deb` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.3.0_amd64.deb) |
 
 > You may see a Windows SmartScreen warning when running the installer. This is normal for applications pending code signing approval. See [Code Signing Policy](#code-signing-policy) below.
 

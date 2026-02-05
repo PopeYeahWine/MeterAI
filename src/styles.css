@@ -491,11 +491,7 @@ body {
   background: linear-gradient(135deg, rgba(26, 26, 36, 0.98) 0%, rgba(20, 20, 30, 0.98) 100%);
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  /* Layered shadow for realistic depth */
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.15),
-    0 2px 4px rgba(0, 0, 0, 0.12),
-    0 4px 8px rgba(0, 0, 0, 0.1);
+  box-shadow: none;
   flex-wrap: wrap;
   gap: 8px;
   cursor: move !important;
@@ -982,6 +978,11 @@ body {
 .expanded-card-plan {
   font-size: 12px;
   color: #afafaf;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+  max-width: 100%;
 }
 
 .expanded-card-percent {

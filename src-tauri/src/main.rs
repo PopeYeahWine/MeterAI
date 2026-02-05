@@ -10,6 +10,7 @@ use sha2::{Sha256, Digest};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{
@@ -226,6 +227,35 @@ fn get_data_path() -> PathBuf {
     fs::create_dir_all(&path).ok();
     path.push("data.json");
     path
+}
+
+fn get_drag_debug_log_path() -> PathBuf {
+    let mut path = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
+    path.push("meter-ai");
+    std::fs::create_dir_all(&path).ok();
+    path.push("drag-debug.log");
+    path
+}
+
+#[tauri::command]
+fn clear_drag_debug_log() -> Result<(), String> {
+    let path = get_drag_debug_log_path();
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn append_drag_debug_log(line: String) -> Result<(), String> {
+    let path = get_drag_debug_log_path();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    writeln!(file, "{}", line).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn load_state() -> AppState {
@@ -1568,6 +1598,224 @@ fn clear_internal_token() -> Result<(), String> {
     delete_internal_token().map_err(|e| e.to_string())
 }
 
+// ============== CODEX LOCAL USAGE (VS CODE / CLI) ==============
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexAuthTokens {
+    #[serde(rename = "access_token")]
+    pub access_token: Option<String>,
+    #[serde(rename = "refresh_token")]
+    pub refresh_token: Option<String>,
+    #[serde(rename = "id_token")]
+    pub id_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexAuthFile {
+    pub tokens: Option<CodexAuthTokens>,
+    #[serde(rename = "auth_mode")]
+    pub auth_mode: Option<String>,
+    #[serde(rename = "last_refresh")]
+    pub last_refresh: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexUsageResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub primary_used_percent: Option<f64>,
+    pub primary_window_minutes: Option<i64>,
+    pub primary_reset: Option<String>,
+    pub secondary_used_percent: Option<f64>,
+    pub secondary_window_minutes: Option<i64>,
+    pub secondary_reset: Option<String>,
+    pub plan_type: Option<String>,
+    pub total_tokens: Option<u64>,
+    pub last_total_tokens: Option<u64>,
+}
+
+fn get_codex_base_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".codex"))
+}
+
+fn get_codex_auth_path() -> Option<PathBuf> {
+    get_codex_base_dir().map(|d| d.join("auth.json"))
+}
+
+fn get_codex_sessions_dir() -> Option<PathBuf> {
+    get_codex_base_dir().map(|d| d.join("sessions"))
+}
+
+fn read_codex_auth() -> Option<CodexAuthFile> {
+    let path = get_codex_auth_path()?;
+    if !path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<CodexAuthFile>(&content).ok()
+}
+
+fn get_codex_access_token() -> Option<String> {
+    read_codex_auth()
+        .and_then(|a| a.tokens)
+        .and_then(|t| t.access_token)
+        .filter(|t| !t.is_empty())
+}
+
+#[tauri::command]
+fn has_codex_token() -> bool {
+    get_codex_access_token().is_some()
+}
+
+fn collect_jsonl_files(dir: &PathBuf) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![dir.clone()];
+    while let Some(path) = stack.pop() {
+        if let Ok(entries) = fs::read_dir(&path) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if let Some(ext) = p.extension() {
+                    if ext == "jsonl" {
+                        files.push(p);
+                    }
+                }
+            }
+        }
+    }
+    files
+}
+
+fn find_latest_codex_session_file() -> Option<PathBuf> {
+    let dir = get_codex_sessions_dir()?;
+    if !dir.exists() {
+        return None;
+    }
+    let files = collect_jsonl_files(&dir);
+    let mut latest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for file in files {
+        if let Ok(meta) = fs::metadata(&file) {
+            if let Ok(modified) = meta.modified() {
+                match &latest {
+                    None => latest = Some((modified, file)),
+                    Some((t, _)) if modified > *t => latest = Some((modified, file)),
+                    _ => {}
+                }
+            }
+        }
+    }
+    latest.map(|(_, p)| p)
+}
+
+fn value_as_f64(v: Option<&serde_json::Value>) -> Option<f64> {
+    match v {
+        Some(serde_json::Value::Number(n)) => n.as_f64(),
+        _ => None,
+    }
+}
+
+fn value_as_i64(v: Option<&serde_json::Value>) -> Option<i64> {
+    match v {
+        Some(serde_json::Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        _ => None,
+    }
+}
+
+fn value_as_u64(v: Option<&serde_json::Value>) -> Option<u64> {
+    match v {
+        Some(serde_json::Value::Number(n)) => n.as_u64().or_else(|| n.as_f64().map(|f| f as u64)),
+        _ => None,
+    }
+}
+
+fn reset_to_iso(ts: Option<i64>) -> Option<String> {
+    let ts = ts?;
+    DateTime::<Utc>::from_timestamp(ts, 0).map(|dt| dt.to_rfc3339())
+}
+
+fn parse_latest_codex_usage() -> Result<CodexUsageResult, AppError> {
+    let file = find_latest_codex_session_file()
+        .ok_or_else(|| AppError::ConfigError("No Codex session logs found".to_string()))?;
+
+    let f = fs::File::open(&file).map_err(|e| AppError::ConfigError(e.to_string()))?;
+    let reader = io::BufReader::new(f);
+
+    let mut last_payload: Option<serde_json::Value> = None;
+    for line in reader.lines() {
+        let line = line.map_err(|e| AppError::ConfigError(e.to_string()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(val) => val,
+            Err(_) => continue,
+        };
+        let payload = v.get("payload");
+        let payload_type = payload.and_then(|p| p.get("type")).and_then(|t| t.as_str());
+        if payload_type == Some("token_count") {
+            last_payload = payload.cloned();
+        }
+    }
+
+    let payload = last_payload.ok_or_else(|| AppError::ConfigError("No token_count event found".to_string()))?;
+    let rate_limits = payload.get("rate_limits");
+    let info = payload.get("info");
+
+    let primary = rate_limits.and_then(|r| r.get("primary"));
+    let secondary = rate_limits.and_then(|r| r.get("secondary"));
+
+    let primary_used_percent = value_as_f64(primary.and_then(|p| p.get("used_percent")));
+    let primary_window_minutes = value_as_i64(primary.and_then(|p| p.get("window_minutes")));
+    let primary_reset = reset_to_iso(value_as_i64(primary.and_then(|p| p.get("resets_at"))));
+
+    let secondary_used_percent = value_as_f64(secondary.and_then(|p| p.get("used_percent")));
+    let secondary_window_minutes = value_as_i64(secondary.and_then(|p| p.get("window_minutes")));
+    let secondary_reset = reset_to_iso(value_as_i64(secondary.and_then(|p| p.get("resets_at"))));
+
+    let plan_type = rate_limits
+        .and_then(|r| r.get("plan_type"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let total_tokens = value_as_u64(info.and_then(|i| i.get("total_token_usage")).and_then(|t| t.get("total_tokens")));
+    let last_total_tokens = value_as_u64(info.and_then(|i| i.get("last_token_usage")).and_then(|t| t.get("total_tokens")));
+
+    Ok(CodexUsageResult {
+        success: true,
+        error: None,
+        primary_used_percent,
+        primary_window_minutes,
+        primary_reset,
+        secondary_used_percent,
+        secondary_window_minutes,
+        secondary_reset,
+        plan_type,
+        total_tokens,
+        last_total_tokens,
+    })
+}
+
+#[tauri::command]
+fn get_codex_usage() -> CodexUsageResult {
+    match parse_latest_codex_usage() {
+        Ok(result) => result,
+        Err(e) => CodexUsageResult {
+            success: false,
+            error: Some(e.to_string()),
+            primary_used_percent: None,
+            primary_window_minutes: None,
+            primary_reset: None,
+            secondary_used_percent: None,
+            secondary_window_minutes: None,
+            secondary_reset: None,
+            plan_type: None,
+            total_tokens: None,
+            last_total_tokens: None,
+        },
+    }
+}
+
 // ============== OPENAI API INTEGRATION ==============
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1996,7 +2244,11 @@ fn main() {
             has_openai_api_key,
             save_openai_api_key,
             remove_openai_api_key,
-            get_openai_api_key_preview
+            get_openai_api_key_preview,
+            get_codex_usage,
+            has_codex_token,
+            append_drag_debug_log,
+            clear_drag_debug_log
         ])
         .on_window_event(|event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event.event() {

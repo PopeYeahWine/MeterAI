@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { listen } from '@tauri-apps/api/event'
-import { appWindow, LogicalSize, LogicalPosition, currentMonitor } from '@tauri-apps/api/window'
+import { appWindow, LogicalPosition, LogicalSize, availableMonitors, currentMonitor } from '@tauri-apps/api/window'
 import { exit } from '@tauri-apps/api/process'
 import { shell } from '@tauri-apps/api'
 import { fetch } from '@tauri-apps/api/http'
@@ -101,6 +101,20 @@ interface OpenAIUsageResult {
   percent: number | null
   is_pay_as_you_go: boolean
   daily_usage: Array<{ date: string; cost_usd: number }>
+}
+
+interface CodexUsageResult {
+  success: boolean
+  error: string | null
+  primary_used_percent: number | null
+  primary_window_minutes: number | null
+  primary_reset: string | null
+  secondary_used_percent: number | null
+  secondary_window_minutes: number | null
+  secondary_reset: string | null
+  plan_type: string | null
+  total_tokens: number | null
+  last_total_tokens: number | null
 }
 
 // Token management types
@@ -1147,6 +1161,8 @@ function App() {
   const [hasClaudeCodeToken, setHasClaudeCodeToken] = useState(false)
   const [openaiUsage, setOpenaiUsage] = useState<OpenAIUsageResult | null>(null)
   const [hasOpenaiApiKey, setHasOpenaiApiKey] = useState(false)
+  const [codexUsage, setCodexUsage] = useState<CodexUsageResult | null>(null)
+  const [hasCodexToken, setHasCodexToken] = useState(false)
   const [showClaudeDetectedPopup, setShowClaudeDetectedPopup] = useState(false)
   const [claudeDetectedDismissed, setClaudeDetectedDismissed] = useState(false)
   const [categoryFilter, setCategoryFilter] = useState<ProviderCategory | 'all' | 'available'>('all')
@@ -1201,6 +1217,35 @@ function App() {
     audio: true,
     multimodal: true
   })
+  const compactHeightRef = useRef(0)
+  const lastMonitorKeyRef = useRef<string | null>(null)
+  const isMonitorResizeInFlightRef = useRef(false)
+  const lastDragLogAtRef = useRef(0)
+  const isDraggingRef = useRef(false)
+  const dragIdleTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const dragSettleTicketRef = useRef(0)
+  const monitorSwitchVerifyTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const lastInDragResyncAtRef = useRef(0)
+  const lastStableMonitorRef = useRef<Awaited<ReturnType<typeof currentMonitor>> | null>(null)
+  const pendingMonitorSwitchRef = useRef<{ key: string; hits: number; lastSeenAt: number; overlapRatio: number } | null>(null)
+  const COMPACT_WIDTH = 520
+  const EXPANDED_WIDTH = 520
+  const SETTINGS_WIDTH = 380
+  const MONITOR_SWITCH_MIN_OVERLAP = 0.68
+  const MONITOR_SWITCH_STABLE_HITS = 2
+  const writeDragDebugLog = useCallback((event: string, data: Record<string, unknown>, force = false) => {
+    const now = Date.now()
+    if (!force && now - lastDragLogAtRef.current < 120) return
+    lastDragLogAtRef.current = now
+    const entry = JSON.stringify({
+      ts: new Date(now).toISOString(),
+      event,
+      viewMode,
+      data
+    })
+    console.log('DRAG_DEBUG', entry)
+    void invoke('append_drag_debug_log', { line: entry }).catch(() => {})
+  }, [viewMode])
 
   // Track enabled state for all AI providers (from providers.ts)
   const [enabledProviders, setEnabledProviders] = useState<Record<string, boolean>>(() => {
@@ -1239,6 +1284,9 @@ function App() {
   useEffect(() => {
     const loadData = async () => {
       try {
+        await invoke('clear_drag_debug_log').catch(() => {})
+        writeDragDebugLog('startup', { note: 'session started' }, true)
+
         const data = await invoke<UsageData>('get_usage')
         setUsage(data)
         const providersList = await invoke<ProviderConfig[]>('get_all_providers')
@@ -1251,9 +1299,27 @@ function App() {
         try {
           const monitor = await currentMonitor()
           if (monitor) {
+            const monitorKey = getMonitorKey(monitor)
+            lastMonitorKeyRef.current = monitorKey
+            lastStableMonitorRef.current = monitor
+            const bounds = getMonitorLogicalBounds(monitor)
+            const startupWidth = getWidthForMonitor(bounds, COMPACT_WIDTH)
+            const startupHeight = Math.max(34, Math.min(42, (bounds?.height ?? 42) - 8))
+            compactHeightRef.current = startupHeight
+            const startupPhysical = await setWindowSizeFromLogical({ width: startupWidth, height: startupHeight }, monitor)
+            writeDragDebugLog('startup_monitor', {
+              monitorKey,
+              name: monitor.name ?? 'unknown',
+              scale: monitor.scaleFactor,
+              position: monitor.position,
+              size: monitor.size,
+              startupWidth,
+              startupHeight,
+              startupPhysical
+            }, true)
             // Default: center horizontally at top
             const screenWidth = monitor.size.width / monitor.scaleFactor
-            const windowWidth = 520
+            const windowWidth = startupWidth
             const x = Math.round((screenWidth - windowWidth) / 2)
             await appWindow.setPosition(new LogicalPosition(x, 1))
           }
@@ -1337,6 +1403,31 @@ function App() {
           }
         } catch (e) {
           console.log('Claude Code integration not available:', e)
+        }
+
+        // Codex local integration
+        try {
+          const hasToken = await invoke<boolean>('has_codex_token')
+          setHasCodexToken(hasToken)
+
+          if (hasToken) {
+            const codex = await invoke<CodexUsageResult>('get_codex_usage')
+            setCodexUsage(codex)
+
+            if (codex.success) {
+              const percent = Math.round(codex.primary_used_percent ?? 0)
+              setProvidersUsage(prev => ({
+                ...prev,
+                'openai-codex': {
+                  used: percent,
+                  limit: 100,
+                  percent
+                }
+              }))
+            }
+          }
+        } catch (e) {
+          console.log('Codex integration not available:', e)
         }
 
         // Load autostart and config status
@@ -1550,6 +1641,72 @@ function App() {
     }
   }, [refreshClaudeCodeUsage])
 
+  // Refresh Codex usage function
+  const refreshCodexUsage = useCallback(async () => {
+    try {
+      const codexEnabled = enabledProviders['openai-codex']
+
+      const hasToken = await invoke<boolean>('has_codex_token')
+      setHasCodexToken(prev => prev !== hasToken ? hasToken : prev)
+
+      if (!codexEnabled || !hasToken) {
+        return
+      }
+
+      console.log('MeterAI: Refreshing Codex usage...')
+      const result = await invoke<CodexUsageResult>('get_codex_usage')
+
+      setCodexUsage(prev => {
+        if (!prev || prev.primary_used_percent !== result.primary_used_percent ||
+            prev.primary_reset !== result.primary_reset ||
+            prev.total_tokens !== result.total_tokens) {
+          return result
+        }
+        return prev
+      })
+
+      if (result.success) {
+        const percent = Math.round(result.primary_used_percent ?? 0)
+        setProvidersUsage(prev => {
+          const current = prev['openai-codex']
+          if (!current || current.percent !== percent) {
+            return {
+              ...prev,
+              'openai-codex': {
+                used: percent,
+                limit: 100,
+                percent
+              }
+            }
+          }
+          return prev
+        })
+      } else {
+        console.log('MeterAI: Codex usage fetch returned success=false:', result.error)
+      }
+    } catch (e) {
+      console.log('MeterAI: Failed to refresh Codex usage:', e)
+    }
+  }, [enabledProviders])
+
+  // Auto-refresh Codex usage every 2 minutes
+  useEffect(() => {
+    const POLL_INTERVAL = 2 * 60 * 1000
+
+    const initialRefresh = setTimeout(() => {
+      refreshCodexUsage()
+    }, 7000)
+
+    const refreshInterval = setInterval(() => {
+      refreshCodexUsage()
+    }, POLL_INTERVAL)
+
+    return () => {
+      clearTimeout(initialRefresh)
+      clearInterval(refreshInterval)
+    }
+  }, [refreshCodexUsage])
+
   // Refresh OpenAI usage function
   const refreshOpenAIUsage = useCallback(async () => {
     try {
@@ -1759,30 +1916,424 @@ function App() {
     // Only start drag on left mouse button
     if (e.button !== 0) return
     try {
+      isDraggingRef.current = true
+      dragSettleTicketRef.current += 1
+      lastInDragResyncAtRef.current = 0
+      if (dragIdleTimerRef.current) {
+        clearTimeout(dragIdleTimerRef.current)
+        dragIdleTimerRef.current = null
+      }
+      writeDragDebugLog('start_drag', { button: e.button }, true)
       await appWindow.startDragging()
     } catch (err) {
       console.log('Drag failed:', err)
+      writeDragDebugLog('start_drag_error', { error: String(err) }, true)
     }
-  }, [])
+  }, [writeDragDebugLog])
 
-  // Save window position when moved (if save position is enabled)
+  function getMonitorLogicalBounds(monitor: Awaited<ReturnType<typeof currentMonitor>>) {
+    if (!monitor) return null
+    return {
+      width: Math.floor(monitor.size.width / monitor.scaleFactor),
+      height: Math.floor(monitor.size.height / monitor.scaleFactor)
+    }
+  }
+
+  function getMonitorKey(monitor: Awaited<ReturnType<typeof currentMonitor>>) {
+    if (!monitor) return 'none'
+    return `${monitor.name ?? 'unknown'}:${monitor.scaleFactor}:${monitor.position.x}:${monitor.position.y}`
+  }
+
+  function getOverlapArea(
+    a: { x: number; y: number; width: number; height: number },
+    b: { x: number; y: number; width: number; height: number }
+  ) {
+    const x1 = Math.max(a.x, b.x)
+    const y1 = Math.max(a.y, b.y)
+    const x2 = Math.min(a.x + a.width, b.x + b.width)
+    const y2 = Math.min(a.y + a.height, b.y + b.height)
+    const w = Math.max(0, x2 - x1)
+    const h = Math.max(0, y2 - y1)
+    return w * h
+  }
+
+  function getDominantMonitorForRect(
+    monitors: Awaited<ReturnType<typeof availableMonitors>>,
+    windowRect: { x: number; y: number; width: number; height: number }
+  ) {
+    let bestMonitor: Awaited<ReturnType<typeof currentMonitor>> | null = null
+    let bestArea = 0
+    const windowArea = Math.max(1, windowRect.width * windowRect.height)
+    for (const monitor of monitors) {
+      const monitorRect = {
+        x: monitor.position.x,
+        y: monitor.position.y,
+        width: monitor.size.width,
+        height: monitor.size.height
+      }
+      const area = getOverlapArea(windowRect, monitorRect)
+      if (area > bestArea) {
+        bestArea = area
+        bestMonitor = monitor
+      }
+    }
+    return {
+      monitor: bestMonitor,
+      overlapRatio: bestArea / windowArea
+    }
+  }
+
+  function getWidthForMonitor(bounds: { width: number; height: number } | null, preferredWidth: number) {
+    if (!bounds) return preferredWidth
+    return Math.max(320, Math.min(preferredWidth, bounds.width - 8))
+  }
+
+  function getHeightForMonitor(bounds: { width: number; height: number } | null, preferredHeight: number, minHeight: number) {
+    if (!bounds) return preferredHeight
+    return Math.max(minHeight, Math.min(preferredHeight, bounds.height - 8))
+  }
+
+  function getTargetSizeForMode(
+    mode: ViewMode,
+    bounds: { width: number; height: number } | null,
+    compactHeight?: number
+  ) {
+    if (mode === 'expanded') {
+      return {
+        width: getWidthForMonitor(bounds, EXPANDED_WIDTH),
+        height: getHeightForMonitor(bounds, 600, 420)
+      }
+    }
+    if (mode === 'settings') {
+      return {
+        width: getWidthForMonitor(bounds, SETTINGS_WIDTH),
+        height: getHeightForMonitor(bounds, 480, 360)
+      }
+    }
+    const safeCompactHeight = Math.max(34, compactHeight ?? 38)
+    return {
+      width: getWidthForMonitor(bounds, COMPACT_WIDTH),
+      height: getHeightForMonitor(bounds, safeCompactHeight, 34)
+    }
+  }
+
+  async function setWindowSizeFromLogical(target: { width: number; height: number }, monitor?: Awaited<ReturnType<typeof currentMonitor>> | null) {
+    const targetMonitor = monitor ?? await currentMonitor().catch(() => null)
+    const scale = targetMonitor?.scaleFactor ?? 1
+    await appWindow.setSize(new LogicalSize(target.width, target.height))
+    const physicalWidth = Math.max(1, Math.round(target.width * scale))
+    const physicalHeight = Math.max(1, Math.round(target.height * scale))
+    return { scale, physicalWidth, physicalHeight }
+  }
+
+  function isPhysicalSizeOutOfSync(
+    innerSizePhysical: { width: number; height: number } | null,
+    expectedPhysical: { width: number; height: number }
+  ) {
+    if (!innerSizePhysical) return false
+    const widthTolerance = Math.max(40, Math.round(expectedPhysical.width * 0.2))
+    const heightTolerance = Math.max(24, Math.round(expectedPhysical.height * 0.2))
+    return (
+      Math.abs(innerSizePhysical.width - expectedPhysical.width) > widthTolerance ||
+      Math.abs(innerSizePhysical.height - expectedPhysical.height) > heightTolerance
+    )
+  }
+
+  // Save window position when moved (if save position is enabled) + handle monitor transitions in real-time
   useEffect(() => {
+    let disposed = false
     let unlistenMove: (() => void) | null = null
 
+    const scheduleDragSettle = () => {
+      if (dragIdleTimerRef.current) {
+        clearTimeout(dragIdleTimerRef.current)
+      }
+      const ticket = ++dragSettleTicketRef.current
+      dragIdleTimerRef.current = window.setTimeout(async () => {
+        if (disposed || ticket !== dragSettleTicketRef.current) return
+        isDraggingRef.current = false
+        if (isMonitorResizeInFlightRef.current) return
+        const monitor = lastStableMonitorRef.current ?? await currentMonitor().catch(() => null)
+        const monitorKey = getMonitorKey(monitor)
+        const newScale = monitor?.scaleFactor ?? 1
+        const bounds = getMonitorLogicalBounds(monitor)
+        const compactTargetHeight = Math.max(34, compactHeightRef.current || 38)
+        const target = getTargetSizeForMode(viewMode, bounds, compactTargetHeight)
+        const expectedPhysical = {
+          width: Math.max(1, Math.round(target.width * newScale)),
+          height: Math.max(1, Math.round(target.height * newScale))
+        }
+        const innerSizePhysical = await appWindow.innerSize().catch(() => null)
+        const isSizeOutOfSync = isPhysicalSizeOutOfSync(innerSizePhysical, expectedPhysical)
+        writeDragDebugLog('drag_settle_check', {
+          monitorKey,
+          monitorScale: newScale,
+          monitorBounds: bounds,
+          innerSizePhysical,
+          expectedPhysical,
+          isSizeOutOfSync
+        }, true)
+        if (!isSizeOutOfSync) return
+
+        isMonitorResizeInFlightRef.current = true
+        try {
+          const applied = await setWindowSizeFromLogical(target, monitor)
+          writeDragDebugLog('drag_settle_resync', {
+            monitorKey,
+            monitorScale: newScale,
+            targetLogical: target,
+            expectedPhysical,
+            innerSizePhysical,
+            appliedPhysical: applied
+          }, true)
+        } catch (e) {
+          writeDragDebugLog('drag_settle_resync_error', { error: String(e) }, true)
+        } finally {
+          isMonitorResizeInFlightRef.current = false
+        }
+      }, 180)
+    }
+
+    const scheduleMonitorSwitchVerify = (expectedMonitorKey: string) => {
+      if (monitorSwitchVerifyTimerRef.current) {
+        clearTimeout(monitorSwitchVerifyTimerRef.current)
+      }
+      monitorSwitchVerifyTimerRef.current = window.setTimeout(async () => {
+        if (disposed || isMonitorResizeInFlightRef.current) return
+        const monitor = await currentMonitor().catch(() => null)
+        const monitorKey = getMonitorKey(monitor)
+        if (monitorKey !== expectedMonitorKey) return
+        lastStableMonitorRef.current = monitor
+        const scale = monitor?.scaleFactor ?? 1
+        const bounds = getMonitorLogicalBounds(monitor)
+        const compactTargetHeight = Math.max(34, compactHeightRef.current || 38)
+        const target = getTargetSizeForMode(viewMode, bounds, compactTargetHeight)
+        const expectedPhysical = {
+          width: Math.max(1, Math.round(target.width * scale)),
+          height: Math.max(1, Math.round(target.height * scale))
+        }
+        const innerSizePhysical = await appWindow.innerSize().catch(() => null)
+        const isSizeOutOfSync = isPhysicalSizeOutOfSync(innerSizePhysical, expectedPhysical)
+        if (!isSizeOutOfSync) {
+          writeDragDebugLog('monitor_switch_verify_ok', {
+            monitorKey,
+            scale,
+            innerSizePhysical,
+            expectedPhysical
+          }, true)
+          return
+        }
+        isMonitorResizeInFlightRef.current = true
+        try {
+          const applied = await setWindowSizeFromLogical(target, monitor)
+          writeDragDebugLog('monitor_switch_verify_resync', {
+            monitorKey,
+            scale,
+            innerSizePhysical,
+            expectedPhysical,
+            targetLogical: target,
+            appliedPhysical: applied
+          }, true)
+        } catch (e) {
+          writeDragDebugLog('monitor_switch_verify_error', { error: String(e) }, true)
+        } finally {
+          isMonitorResizeInFlightRef.current = false
+        }
+      }, 90)
+    }
+
     const setupMoveListener = async () => {
-      unlistenMove = await appWindow.onMoved(async ({ payload: position }) => {
+      const unlisten = await appWindow.onMoved(async ({ payload: position }) => {
+        scheduleDragSettle()
+        const innerSizePhysical = await appWindow.innerSize().catch(() => null)
         if (savePositionEnabled) {
           localStorage.setItem('windowPosition', JSON.stringify({ x: position.x, y: position.y }))
         }
+
+        // Detect monitor switch while dragging and resync size immediately (no need to drop)
+        if (isMonitorResizeInFlightRef.current) return
+        const monitorFromApi = await currentMonitor().catch(() => null)
+        const allMonitors = await availableMonitors().catch(() => [])
+        const fallbackScale = monitorFromApi?.scaleFactor ?? lastStableMonitorRef.current?.scaleFactor ?? 1
+        const compactTargetHeight = Math.max(34, compactHeightRef.current || 38)
+        const windowRect = {
+          x: position.x,
+          y: position.y,
+          width: Math.max(1, innerSizePhysical?.width ?? Math.round(COMPACT_WIDTH * fallbackScale)),
+          height: Math.max(1, innerSizePhysical?.height ?? Math.round(compactTargetHeight * fallbackScale))
+        }
+        const dominant = getDominantMonitorForRect(allMonitors, windowRect)
+        const candidateMonitor = dominant.monitor ?? monitorFromApi ?? lastStableMonitorRef.current
+        const candidateKey = getMonitorKey(candidateMonitor)
+        const overlapRatio = dominant.overlapRatio
+
+        if (lastMonitorKeyRef.current === null) {
+          lastMonitorKeyRef.current = candidateKey
+          lastStableMonitorRef.current = candidateMonitor
+          pendingMonitorSwitchRef.current = null
+          const initScale = candidateMonitor?.scaleFactor ?? 1
+          const initBounds = getMonitorLogicalBounds(candidateMonitor)
+          const initTarget = getTargetSizeForMode(viewMode, initBounds, compactTargetHeight)
+          writeDragDebugLog('move_init_monitor', {
+            position,
+            monitorKey: candidateKey,
+            monitorScale: initScale,
+            monitorBounds: initBounds,
+            overlapRatio,
+            expectedPhysical: {
+              width: Math.max(1, Math.round(initTarget.width * initScale)),
+              height: Math.max(1, Math.round(initTarget.height * initScale))
+            },
+            innerSizePhysical
+          }, true)
+          return
+        }
+
+        let hasMonitorSwitched = false
+        if (candidateKey !== lastMonitorKeyRef.current) {
+          const now = Date.now()
+          const pending = pendingMonitorSwitchRef.current
+          if (!pending || pending.key !== candidateKey || (now - pending.lastSeenAt) > 450) {
+            pendingMonitorSwitchRef.current = { key: candidateKey, hits: 1, lastSeenAt: now, overlapRatio }
+          } else {
+            pendingMonitorSwitchRef.current = {
+              key: candidateKey,
+              hits: pending.hits + 1,
+              lastSeenAt: now,
+              overlapRatio
+            }
+          }
+          const nextPending = pendingMonitorSwitchRef.current
+          const shouldSwitchNow = !!nextPending &&
+            nextPending.hits >= MONITOR_SWITCH_STABLE_HITS &&
+            overlapRatio >= MONITOR_SWITCH_MIN_OVERLAP
+          if (shouldSwitchNow) {
+            hasMonitorSwitched = true
+            lastMonitorKeyRef.current = candidateKey
+            lastStableMonitorRef.current = candidateMonitor
+            pendingMonitorSwitchRef.current = null
+          } else {
+            writeDragDebugLog('monitor_switch_pending', {
+              position,
+              fromMonitorKey: lastMonitorKeyRef.current,
+              candidateKey,
+              candidateHits: nextPending?.hits ?? 0,
+              overlapRatio,
+              windowRect,
+              innerSizePhysical
+            })
+          }
+        } else {
+          pendingMonitorSwitchRef.current = null
+        }
+
+        const effectiveMonitor = hasMonitorSwitched
+          ? candidateMonitor
+          : (lastStableMonitorRef.current ?? candidateMonitor)
+        const effectiveMonitorKey = getMonitorKey(effectiveMonitor)
+        const effectiveScale = effectiveMonitor?.scaleFactor ?? 1
+        const bounds = getMonitorLogicalBounds(effectiveMonitor)
+        const target = getTargetSizeForMode(viewMode, bounds, compactTargetHeight)
+        const expectedPhysical = {
+          width: Math.max(1, Math.round(target.width * effectiveScale)),
+          height: Math.max(1, Math.round(target.height * effectiveScale))
+        }
+        const isSizeOutOfSync = isPhysicalSizeOutOfSync(
+          innerSizePhysical as { width: number; height: number } | null,
+          expectedPhysical
+        )
+        const isSeverelyOutOfSync = !!innerSizePhysical && (
+          innerSizePhysical.width > expectedPhysical.width * 1.35 ||
+          innerSizePhysical.width < expectedPhysical.width * 0.75 ||
+          innerSizePhysical.height > expectedPhysical.height * 1.35 ||
+          innerSizePhysical.height < expectedPhysical.height * 0.75
+        )
+
+        if (!hasMonitorSwitched) {
+          const now = Date.now()
+          const shouldResyncWhileDragging = isDraggingRef.current && isSeverelyOutOfSync && (now - lastInDragResyncAtRef.current) > 220
+          if (shouldResyncWhileDragging) {
+            lastInDragResyncAtRef.current = now
+            isMonitorResizeInFlightRef.current = true
+            try {
+              const applied = await setWindowSizeFromLogical(target, effectiveMonitor)
+              writeDragDebugLog('drag_inflight_resync', {
+                position,
+                monitorKey: effectiveMonitorKey,
+                monitorScale: effectiveScale,
+                monitorBounds: bounds,
+                overlapRatio,
+                candidateKey,
+                innerSizePhysical,
+                expectedPhysical,
+                targetLogical: target,
+                appliedPhysical: applied
+              }, true)
+            } catch (e) {
+              writeDragDebugLog('drag_inflight_resync_error', { error: String(e) }, true)
+            } finally {
+              isMonitorResizeInFlightRef.current = false
+            }
+            return
+          }
+          writeDragDebugLog('move_same_monitor', {
+            position,
+            monitorKey: effectiveMonitorKey,
+            monitorScale: effectiveScale,
+            monitorBounds: bounds,
+            overlapRatio,
+            candidateKey,
+            innerSizePhysical,
+            isSizeOutOfSync
+          })
+          return
+        }
+
+        isMonitorResizeInFlightRef.current = true
+        try {
+          const applied = await setWindowSizeFromLogical(target, effectiveMonitor)
+          writeDragDebugLog('monitor_switch_detected', {
+            position,
+            monitorKey: effectiveMonitorKey,
+            candidateKey,
+            overlapRatio,
+            monitorName: effectiveMonitor?.name ?? 'unknown',
+            monitorBounds: bounds,
+            innerSizePhysical,
+            expectedPhysical,
+            targetLogical: target,
+            appliedPhysical: applied
+          }, true)
+          scheduleMonitorSwitchVerify(effectiveMonitorKey)
+        } catch (e) {
+          console.log('Failed to resync size on monitor switch:', e)
+          writeDragDebugLog('monitor_switch_resize_error', { error: String(e) }, true)
+        } finally {
+          isMonitorResizeInFlightRef.current = false
+        }
       })
+      if (disposed) {
+        unlisten()
+        return
+      }
+      unlistenMove = unlisten
     }
 
-    setupMoveListener()
+    void setupMoveListener()
 
     return () => {
+      disposed = true
+      if (dragIdleTimerRef.current) {
+        clearTimeout(dragIdleTimerRef.current)
+        dragIdleTimerRef.current = null
+      }
+      if (monitorSwitchVerifyTimerRef.current) {
+        clearTimeout(monitorSwitchVerifyTimerRef.current)
+        monitorSwitchVerifyTimerRef.current = null
+      }
       if (unlistenMove) unlistenMove()
     }
-  }, [savePositionEnabled])
+  }, [savePositionEnabled, viewMode, writeDragDebugLog])
 
   const toggleExpand = useCallback(async () => {
     const newMode = viewMode === 'compact' ? 'expanded' : 'compact'
@@ -1791,8 +2342,10 @@ function App() {
       if (newMode === 'expanded') {
         // Reset animation flag so animation plays when expanding
         setHasAnimatedExpand(false)
-        // Larger height to accommodate all providers with scrolling
-        await appWindow.setSize(new LogicalSize(520, 600))
+        const monitor = await currentMonitor().catch(() => null)
+        const bounds = getMonitorLogicalBounds(monitor)
+        const target = getTargetSizeForMode('expanded', bounds)
+        await setWindowSizeFromLogical(target, monitor)
         setViewMode(newMode)
         // Mark animation as done after a short delay
         setTimeout(() => setHasAnimatedExpand(true), 600)
@@ -1801,8 +2354,10 @@ function App() {
         setIsCollapsing(true)
         // Wait for animation to complete before resizing
         setTimeout(async () => {
-          await appWindow.setSize(new LogicalSize(520, 56))
           setViewMode(newMode)
+          setTimeout(() => {
+            resizeCompactWindowToBanner()
+          }, 30)
           setIsCollapsing(false)
           setHasAnimatedExpand(false)
         }, 300)
@@ -1814,10 +2369,59 @@ function App() {
     }
   }, [viewMode])
 
+  const resizeCompactWindowToBanner = useCallback(async () => {
+    if (isDraggingRef.current) return
+    const bannerEl = document.querySelector('.banner-container') as HTMLElement | null
+    if (!bannerEl) return
+    const requestedHeight = Math.max(34, Math.ceil(bannerEl.getBoundingClientRect().height + 2))
+    try {
+      const monitor = await currentMonitor().catch(() => null)
+      const scale = monitor?.scaleFactor ?? 1
+      const bounds = getMonitorLogicalBounds(monitor)
+      const target = getTargetSizeForMode('compact', bounds, requestedHeight)
+      const currentPhysical = await appWindow.innerSize().catch(() => null)
+      const currentLogical = currentPhysical
+        ? {
+            width: Math.round(currentPhysical.width / scale),
+            height: Math.round(currentPhysical.height / scale)
+          }
+        : null
+      if (
+        currentLogical &&
+        Math.abs(currentLogical.width - target.width) <= 1 &&
+        Math.abs(currentLogical.height - target.height) <= 1 &&
+        compactHeightRef.current === target.height
+      ) {
+        return
+      }
+      compactHeightRef.current = target.height
+      writeDragDebugLog('resize_compact_to_banner', {
+        currentLogical,
+        targetWidth: target.width,
+        targetHeight: target.height
+      })
+      await setWindowSizeFromLogical(target, monitor)
+    } catch (e) {
+      console.log('Failed to resize compact window to content:', e)
+      writeDragDebugLog('resize_compact_to_banner_error', { error: String(e) }, true)
+    }
+  }, [writeDragDebugLog])
+
+  useEffect(() => {
+    if (viewMode !== 'compact') return
+    const timer = setTimeout(() => {
+      resizeCompactWindowToBanner()
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [viewMode, enabledProviders, customProviderNames, claudeCodeUsage, openaiUsage, codexUsage, resizeCompactWindowToBanner])
+
   const openSettings = useCallback(async () => {
     setViewMode('settings')
     try {
-      await appWindow.setSize(new LogicalSize(380, 480))
+      const monitor = await currentMonitor().catch(() => null)
+      const bounds = getMonitorLogicalBounds(monitor)
+      const target = getTargetSizeForMode('settings', bounds)
+      await setWindowSizeFromLogical(target, monitor)
     } catch (e) {
       console.log('Failed to resize window')
     }
@@ -1995,6 +2599,18 @@ function App() {
     }
   }
 
+  const isCodexSessionActive = (resetStr: string | null | undefined, usagePercent: number | null | undefined): boolean => {
+    if (!resetStr) return false
+    if (usagePercent === null || usagePercent === undefined || usagePercent === 0) return false
+    try {
+      const resetDate = new Date(resetStr)
+      const now = new Date()
+      return resetDate.getTime() > now.getTime()
+    } catch {
+      return false
+    }
+  }
+
   // Calculate effective Claude usage percent, accounting for reset time
   // If reset time has passed, usage resets to 0% (battery goes back to 100%)
   // This maintains a local counter that syncs with the token but also calculates independently
@@ -2097,6 +2713,21 @@ function App() {
       const fiveHoursMs = 5 * 60 * 60 * 1000
       const elapsed = fiveHoursMs - diff
       return Math.max(0, Math.min(100, (elapsed / fiveHoursMs) * 100))
+    } catch {
+      return 0
+    }
+  }
+
+  const getTimeProgressWithWindow = (resetStr: string | null | undefined, windowMinutes: number | null | undefined): number => {
+    if (!resetStr) return 0
+    try {
+      const resetDate = new Date(resetStr)
+      const now = new Date()
+      const diff = resetDate.getTime() - now.getTime()
+      if (diff <= 0) return 100
+      const windowMs = Math.max(1, (windowMinutes ?? 300)) * 60 * 1000
+      const elapsed = windowMs - diff
+      return Math.max(0, Math.min(100, (elapsed / windowMs) * 100))
     } catch {
       return 0
     }
@@ -2593,7 +3224,10 @@ function App() {
   const openAbout = useCallback(async () => {
     if (viewMode === 'compact') {
       try {
-        await appWindow.setSize(new LogicalSize(520, 600))
+        const monitor = await currentMonitor().catch(() => null)
+        const bounds = getMonitorLogicalBounds(monitor)
+        const target = getTargetSizeForMode('expanded', bounds)
+        await setWindowSizeFromLogical(target, monitor)
         setViewMode('expanded')
       } catch (e) {
         console.log('Failed to resize window:', e)
@@ -2639,6 +3273,8 @@ function App() {
     const isAnthropicConfigured = hasClaudeCodeToken || (anthropicProvider?.enabled && anthropicProvider?.has_api_key)
     // OpenAI is configured if we have an API key (use the state we track)
     const isOpenaiConfigured = hasOpenaiApiKey
+    // Codex is configured if local token is detected
+    const isCodexConfigured = hasCodexToken
 
     // Use effective Claude usage percent - accounts for reset time passing
     // This is the USED percentage (0% = nothing used, 100% = fully used)
@@ -2689,6 +3325,22 @@ function App() {
         : `${Math.round(100 - (openaiUsage.percent ?? 0))}%`) // Hard limit: show remaining%
       : '$0.00 / $0.00'
 
+    // Codex local usage from session logs
+    const codexUsedPercent = codexUsage?.success
+      ? Math.round(codexUsage.primary_used_percent ?? 0)
+      : (providersUsage['openai-codex']?.percent ?? 0)
+    const codexRemainingPercent = 100 - codexUsedPercent
+    const codexWindowMinutes = codexUsage?.primary_window_minutes ?? 300
+    const codexWindowHoursLabel = `${Math.max(1, Math.round(codexWindowMinutes / 60))}h`
+    const codexResetDisplay = codexUsage?.success && codexUsage?.primary_reset
+      ? formatResetTime(codexUsage.primary_reset, codexUsedPercent)
+      : 'Waiting to start'
+    const codexTimeProgress = codexUsage?.success && codexUsage?.primary_reset
+      ? getTimeProgressWithWindow(codexUsage.primary_reset, codexWindowMinutes)
+      : 0
+    const codexTimerColor = getTimeGradientColor(codexTimeProgress)
+    const codexDisplayName = customProviderNames['openai-codex'] || 'OpenAI Codex'
+
     // Format reset time for compact display - pass usage percent to detect waiting state
     const compactResetDisplay = claudeCodeUsage?.success && claudeCodeUsage?.five_hour_reset
       ? formatResetTime(claudeCodeUsage.five_hour_reset, claudeCodeUsage.five_hour_percent)
@@ -2726,7 +3378,7 @@ function App() {
         </div>
 
         {/* Providers - only show if at least one is enabled */}
-        {(enabledProviders['claude-pro-max'] || enabledProviders['openai-api']) && (
+        {(enabledProviders['claude-pro-max'] || enabledProviders['openai-api'] || enabledProviders['openai-codex']) && (
           <div className="banner-providers">
             {/* Claude/Anthropic - new compact 2-line layout */}
             {/* Line 1: Claude Pro/Max + Battery */}
@@ -2785,6 +3437,43 @@ function App() {
                 </div>
               </div>
             )}
+
+            {enabledProviders['openai-codex'] && (
+              <div
+                className={`banner-provider-compact ${!isCodexConfigured ? 'disabled' : ''}`}
+                title={isCodexConfigured
+                  ? `${codexDisplayName}: ${codexRemainingPercent}% remaining (${codexWindowHoursLabel})`
+                  : `${codexDisplayName}: Not configured`}
+              >
+                <div className="provider-line-top">
+                  <span className="provider-name">{codexDisplayName}</span>
+                  <Battery
+                    percent={codexRemainingPercent}
+                    color="#10a37f"
+                    disabled={!isCodexConfigured}
+                    uniqueId="codex-compact"
+                  />
+                </div>
+                {isCodexConfigured && (
+                  <div
+                    className={`provider-line-bottom ${codexResetDisplay === 'Waiting to start' ? 'waiting' : ''}`}
+                    style={{ color: codexResetDisplay === 'Waiting to start' ? '#22F0B6' : codexTimerColor }}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <polyline points="12,6 12,12 16,14"></polyline>
+                    </svg>
+                    <span className="provider-time">{codexResetDisplay}</span>
+                    <span className="provider-remaining">{codexRemainingPercent}%</span>
+                  </div>
+                )}
+                {!isCodexConfigured && (
+                  <div className="provider-line-bottom disabled">
+                    <span className="provider-time">--</span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -2828,7 +3517,9 @@ function App() {
       setEditingProvider(null)
       setViewMode('compact')
       try {
-        await appWindow.setSize(new LogicalSize(520, 56))
+        setTimeout(() => {
+          resizeCompactWindowToBanner()
+        }, 30)
       } catch (e) {
         console.log('Failed to resize window')
       }
@@ -3033,6 +3724,8 @@ function App() {
     const isAnthropicConfigured = hasClaudeCodeToken || (anthropicProvider?.enabled && anthropicProvider?.has_api_key)
     // OpenAI is configured if we have an API key
     const isOpenaiConfigured = hasOpenaiApiKey
+    // Codex is configured if local token is detected
+    const isCodexConfigured = hasCodexToken
 
     // Use effective Claude usage percent - accounts for reset time passing
     const claudeFiveHourUsedPercent = claudeCodeUsage?.success
@@ -3078,6 +3771,21 @@ function App() {
           : `$${openaiUsageUsdExpanded.toFixed(2)} / $0.00`) // Show "$0.00 / $0.00" when no credits
         : `${Math.round(100 - (openaiUsage.percent ?? 0))}%`) // Hard limit: show remaining%
       : '$0.00 / $0.00'
+
+    const codexUsedPercentExpanded = codexUsage?.success
+      ? Math.round(codexUsage.primary_used_percent ?? 0)
+      : (providersUsage['openai-codex']?.percent ?? 0)
+    const codexRemainingPercentExpanded = 100 - codexUsedPercentExpanded
+    const codexWindowMinutesExpanded = codexUsage?.primary_window_minutes ?? 300
+    const codexWindowHoursLabelExpanded = `${Math.max(1, Math.round(codexWindowMinutesExpanded / 60))}h`
+    const codexResetDisplayExpanded = codexUsage?.success && codexUsage?.primary_reset
+      ? formatResetTime(codexUsage.primary_reset, codexUsedPercentExpanded)
+      : 'Waiting to start'
+    const codexTimeProgressExpanded = codexUsage?.success && codexUsage?.primary_reset
+      ? getTimeProgressWithWindow(codexUsage.primary_reset, codexWindowMinutesExpanded)
+      : 0
+    const codexTimerColorExpanded = getTimeGradientColor(codexTimeProgressExpanded)
+    const codexDisplayNameExpanded = customProviderNames['openai-codex'] || 'OpenAI Codex'
 
     // Get time progress for color calculation (0% = just started, 100% = about to reset)
     const timeProgressExpanded = claudeCodeUsage?.success && claudeCodeUsage?.five_hour_reset
@@ -3182,7 +3890,7 @@ function App() {
           </div>
 
           {/* Providers - only show if at least one is enabled */}
-          {(enabledProviders['claude-pro-max'] || enabledProviders['openai-api']) && (
+          {(enabledProviders['claude-pro-max'] || enabledProviders['openai-api'] || enabledProviders['openai-codex']) && (
             <div className="banner-providers">
               {/* Claude/Anthropic - new compact 2-line layout */}
               {enabledProviders['claude-pro-max'] && (
@@ -3232,6 +3940,35 @@ function App() {
                   <div className="provider-line-bottom">
                     <span className="provider-remaining">{isOpenaiConfigured ? openaiRemainingDisplayExpanded : '--'}</span>
                   </div>
+                </div>
+              )}
+              {enabledProviders['openai-codex'] && (
+                <div
+                  className={`banner-provider-compact ${!isCodexConfigured ? 'disabled' : ''}`}
+                  title={isCodexConfigured ? `${codexDisplayNameExpanded}: ${codexRemainingPercentExpanded}% remaining (${codexWindowHoursLabelExpanded})` : `${codexDisplayNameExpanded}: Not configured`}
+                >
+                  <div className="provider-line-top">
+                    <span className="provider-name">{codexDisplayNameExpanded}</span>
+                    <Battery percent={codexRemainingPercentExpanded} color="#10a37f" disabled={!isCodexConfigured} uniqueId="codex-expanded" />
+                  </div>
+                  {isCodexConfigured && (
+                    <div
+                      className={`provider-line-bottom ${codexResetDisplayExpanded === 'Waiting to start' ? 'waiting' : ''}`}
+                      style={{ color: codexResetDisplayExpanded === 'Waiting to start' ? '#22F0B6' : codexTimerColorExpanded }}
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <polyline points="12,6 12,12 16,14"></polyline>
+                      </svg>
+                      <span className="provider-time">{codexResetDisplayExpanded}</span>
+                      <span className="provider-remaining">{codexRemainingPercentExpanded}%</span>
+                    </div>
+                  )}
+                  {!isCodexConfigured && (
+                    <div className="provider-line-bottom disabled">
+                      <span className="provider-time">--</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -3370,13 +4107,16 @@ function App() {
                     const backendProvider = providers.find(p => p.provider_type === providerId)
                     // Check if this is a Claude provider that can use Claude Code OAuth
                     const isClaudeProvider = providerId === 'claude-pro-max' || providerDef.parentId === 'anthropic'
+                    const isCodexProvider = providerId === 'openai-codex'
                     const isConfigured = backendProvider?.has_api_key ||
-                      (isClaudeProvider && hasClaudeCodeToken)
+                      (isClaudeProvider && hasClaudeCodeToken) ||
+                      (isCodexProvider && hasCodexToken)
                     const isRefreshing = refreshingProvider === providerId
 
                     // Special handling for Claude with real OAuth data
                     // Show detailed card if we have Claude Code token, even if no active session (usage=0)
                     const isClaudeWithRealData = isClaudeProvider && hasClaudeCodeToken && (claudeCodeUsage?.success || claudeCodeUsage !== null)
+                    const isCodexWithRealData = isCodexProvider && hasCodexToken && (codexUsage?.success || codexUsage !== null)
 
                     // Used percentage for display text
                     const usedPercent = isClaudeWithRealData
@@ -3394,6 +4134,8 @@ function App() {
                       try {
                         if (isClaudeProvider && hasClaudeCodeToken) {
                           await refreshClaudeCodeUsage()
+                        } else if (isCodexProvider && hasCodexToken) {
+                          await refreshCodexUsage()
                         } else if (isOpenAIProvider && hasOpenaiApiKey) {
                           await refreshOpenAIUsage()
                         }
@@ -3519,6 +4261,124 @@ function App() {
                                     style={{
                                       width: '100%',
                                       background: 'linear-gradient(90deg, rgba(34, 240, 182, 0.3), rgba(34, 240, 182, 0.1))'
+                                    }}
+                                  />
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    }
+
+                    if (showDetailedCard && isCodexWithRealData) {
+                      const codexWindow = codexUsage?.primary_window_minutes ?? 300
+                      const codexUsed = Math.round(codexUsage?.primary_used_percent ?? 0)
+                      const codexRemaining = 100 - codexUsed
+                      const codexSevenDayPercent = codexUsage?.secondary_used_percent
+                      const codexSevenDayReset = codexUsage?.secondary_reset
+                      return (
+                        <div key={providerId} className="expanded-card">
+                          <div className="expanded-card-header">
+                            <label className={`expanded-toggle-mini ${!isEnabled ? 'activable' : ''}`} onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                checked={isEnabled}
+                                onChange={(e) => {
+                                  setEnabledProviders(prev => ({ ...prev, [providerId]: e.target.checked }))
+                                  if (backendProvider) toggleProviderEnabled(providerId, e.target.checked)
+                                }}
+                              />
+                              <span className="expanded-toggle-slider-mini"></span>
+                            </label>
+                            <span className="expanded-card-icon" style={{ background: providerDef.color }}>
+                              {providerDef.icon}
+                            </span>
+                            <span className="expanded-card-name-inline">
+                              <span className="expanded-card-brand">{providerDef.brand}</span>
+                              <span className="expanded-card-plan">{providerDef.name}</span>
+                            </span>
+                            <button
+                              className={`refresh-btn ${isRefreshing ? 'spinning' : ''}`}
+                              onClick={refreshProvider}
+                              title="Refresh"
+                              disabled={isRefreshing}
+                            >
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M23 4v6h-6"></path>
+                                <path d="M1 20v-6h6"></path>
+                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                              </svg>
+                            </button>
+                            <button
+                              className="provider-settings-btn"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setProviderSettingsOpen(providerId)
+                              }}
+                              title="Provider settings"
+                            >
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <circle cx="12" cy="12" r="3"></circle>
+                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                              </svg>
+                            </button>
+                            <span className="provider-info-icon" title={`${providerDef.name} - ${providerDef.website}`}>?</span>
+                          </div>
+                          <div className="expanded-usage-block">
+                            <div className="expanded-usage-label-row">
+                              <span className="expanded-usage-label">Usage</span>
+                              <span className="expanded-usage-badge badge-5h">5h: {codexUsed}%</span>
+                              {codexSevenDayPercent !== undefined && codexSevenDayPercent !== null && (
+                                <span className="expanded-usage-badge badge-7d">
+                                  7d: {Math.round(codexSevenDayPercent)}%
+                                  {formatSevenDayReset(codexSevenDayReset) && (
+                                    <span className="reset-info"> · Reset in {formatSevenDayReset(codexSevenDayReset)}</span>
+                                  )}
+                                </span>
+                              )}
+                            </div>
+                            <div className="expanded-usage-row">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+                              </svg>
+                              <div className="expanded-usage-bar-container">
+                                <div
+                                  className="expanded-usage-bar-fill"
+                                  style={{
+                                    width: `${Math.min(codexRemaining, 100)}%`,
+                                    background: getUsageGradientStyle(codexRemaining, providerId)
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                          <div className="expanded-time-progress">
+                            <div className="expanded-time-label-row">
+                              <span className="expanded-time-label">{isCodexSessionActive(codexUsage?.primary_reset, codexUsage?.primary_used_percent) ? 'Time Elapsed' : 'Session Status'}</span>
+                              <span className={`expanded-time-badge ${!isCodexSessionActive(codexUsage?.primary_reset, codexUsage?.primary_used_percent) ? 'waiting' : ''}`} style={!isCodexSessionActive(codexUsage?.primary_reset, codexUsage?.primary_used_percent) ? { color: '#22F0B6' } : {}}>
+                                {isCodexSessionActive(codexUsage?.primary_reset, codexUsage?.primary_used_percent) ? `Reset ${formatResetTime(codexUsage?.primary_reset, codexUsage?.primary_used_percent)}` : 'Waiting to start'}
+                              </span>
+                            </div>
+                            <div className="expanded-time-row">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={isCodexSessionActive(codexUsage?.primary_reset, codexUsage?.primary_used_percent) ? 'currentColor' : '#22F0B6'} strokeWidth="2">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <polyline points="12,6 12,12 16,14"></polyline>
+                              </svg>
+                              <div className="expanded-time-bar">
+                                {isCodexSessionActive(codexUsage?.primary_reset, codexUsage?.primary_used_percent) ? (
+                                  <div
+                                    className="expanded-time-fill"
+                                    style={{
+                                      width: `${getTimeProgressWithWindow(codexUsage?.primary_reset, codexWindow)}%`,
+                                      background: getTimeGradientStyle(getTimeProgressWithWindow(codexUsage?.primary_reset, codexWindow))
+                                    }}
+                                  />
+                                ) : (
+                                  <div
+                                    className="expanded-time-fill waiting"
+                                    style={{
+                                      width: '100%'
                                     }}
                                   />
                                 )}
