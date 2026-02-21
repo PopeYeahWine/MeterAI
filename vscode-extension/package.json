@@ -1,8 +1,8 @@
 {
   "name": "meterai-vscode",
   "displayName": "MeterAI",
-  "description": "Track Claude Code and OpenAI Codex usage in the VS Code status bar with battery meters and reset countdowns.",
-  "version": "0.1.1",
+  "description": "Minimal status-bar usage meter for Claude Code and OpenAI Codex in VS Code. Full visual desktop app available on GitHub.",
+  "version": "0.1.2",
   "publisher": "hpsc-sas",
   "license": "GPL-3.0-or-later",
   "icon": "media/icon.png",

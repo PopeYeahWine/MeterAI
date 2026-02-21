@@ -1,6 +1,7 @@
 # MeterAI for VS Code
 
-MeterAI adds live usage meters for Claude Code and OpenAI Codex directly in the VS Code status bar.
+MeterAI for VS Code is intentionally minimal: it shows Claude Code and OpenAI Codex usage directly in the status bar.
+If you want a richer and more visual experience, use the MeterAI desktop app from GitHub.
 
 ## Features
 
@@ -13,15 +14,23 @@ MeterAI adds live usage meters for Claude Code and OpenAI Codex directly in the 
 
 ## Screenshots
 
-The VS Code extension UI lives in the status bar.
+### VS Code Extension (minimal status bar UI)
 
-If you want a full dashboard UI, MeterAI Desktop is available:
+VS Code displays MeterAI in a compact, text-based status bar format:
+
+![MeterAI VS Code - Status Bar](https://raw.githubusercontent.com/PopeYeahWine/MeterAI/main/vscode-extension/media/screenshot-vscode-statusbar.png)
+
+### MeterAI Desktop (full visual UI)
+
+For a richer interface with a full visual dashboard, use the desktop application:
 
 ![MeterAI Desktop - Expanded](https://raw.githubusercontent.com/PopeYeahWine/MeterAI/main/vscode-extension/media/screenshot-desktop-expanded.png)
 ![MeterAI Desktop - Collapsed](https://raw.githubusercontent.com/PopeYeahWine/MeterAI/main/vscode-extension/media/screenshot-desktop-collapsed.png)
 
 ## Want a richer visual app?
 
+- VS Code extension = fast, compact, rudimentary status bar view
+- Desktop app = full visual interface
 - Repository: https://github.com/PopeYeahWine/MeterAI
 - Desktop releases: https://github.com/PopeYeahWine/MeterAI/releases
 
