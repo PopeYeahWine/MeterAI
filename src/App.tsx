@@ -144,6 +144,22 @@ interface TokenHistory {
 
 type ViewMode = 'compact' | 'expanded' | 'settings'
 
+const getEffectiveUsedPercent = (
+  usedPercent: number | null | undefined,
+  resetStr: string | null | undefined
+): number => {
+  const safePercent = Math.max(0, Math.min(100, Math.round(usedPercent ?? 0)))
+  if (!resetStr) return safePercent
+
+  try {
+    const resetMs = new Date(resetStr).getTime()
+    if (Number.isNaN(resetMs)) return safePercent
+    return Date.now() > resetMs ? 0 : safePercent
+  } catch {
+    return safePercent
+  }
+}
+
 // Custom Stepper Component for threshold inputs
 const ThresholdStepper = ({
   value,
@@ -1415,7 +1431,7 @@ function App() {
             setCodexUsage(codex)
 
             if (codex.success) {
-              const percent = Math.round(codex.primary_used_percent ?? 0)
+              const percent = getEffectiveUsedPercent(codex.primary_used_percent, codex.primary_reset)
               setProvidersUsage(prev => ({
                 ...prev,
                 'openai-codex': {
@@ -1666,7 +1682,7 @@ function App() {
       })
 
       if (result.success) {
-        const percent = Math.round(result.primary_used_percent ?? 0)
+        const percent = getEffectiveUsedPercent(result.primary_used_percent, result.primary_reset)
         setProvidersUsage(prev => {
           const current = prev['openai-codex']
           if (!current || current.percent !== percent) {
@@ -2619,26 +2635,11 @@ function App() {
     if (!claudeCodeUsage?.success) return 0
 
     const tokenPercent = claudeCodeUsage.five_hour_percent ?? 0
-    const resetStr = claudeCodeUsage.five_hour_reset
-
-    // If no reset time, just return the token value
-    if (!resetStr) return tokenPercent
-
-    try {
-      const resetDate = new Date(resetStr)
-      const now = new Date()
-
-      // If reset time has passed, the usage has reset to 0%
-      if (now.getTime() > resetDate.getTime()) {
-        console.log('MeterAI: Reset time has passed, usage should be 0%')
-        return 0
-      }
-
-      // Reset time is in the future, use the token value
-      return tokenPercent
-    } catch {
-      return tokenPercent
+    const effectivePercent = getEffectiveUsedPercent(tokenPercent, claudeCodeUsage.five_hour_reset)
+    if (effectivePercent === 0 && tokenPercent > 0) {
+      console.log('MeterAI: Reset time has passed, usage should be 0%')
     }
+    return effectivePercent
   }
 
   // Helper to format reset time - uses PC local time for countdown calculation
@@ -3327,7 +3328,7 @@ function App() {
 
     // Codex local usage from session logs
     const codexUsedPercent = codexUsage?.success
-      ? Math.round(codexUsage.primary_used_percent ?? 0)
+      ? getEffectiveUsedPercent(codexUsage.primary_used_percent, codexUsage.primary_reset)
       : (providersUsage['openai-codex']?.percent ?? 0)
     const codexRemainingPercent = 100 - codexUsedPercent
     const codexWindowMinutes = codexUsage?.primary_window_minutes ?? 300
@@ -3773,7 +3774,7 @@ function App() {
       : '$0.00 / $0.00'
 
     const codexUsedPercentExpanded = codexUsage?.success
-      ? Math.round(codexUsage.primary_used_percent ?? 0)
+      ? getEffectiveUsedPercent(codexUsage.primary_used_percent, codexUsage.primary_reset)
       : (providersUsage['openai-codex']?.percent ?? 0)
     const codexRemainingPercentExpanded = 100 - codexUsedPercentExpanded
     const codexWindowMinutesExpanded = codexUsage?.primary_window_minutes ?? 300
@@ -4273,10 +4274,11 @@ function App() {
 
                     if (showDetailedCard && isCodexWithRealData) {
                       const codexWindow = codexUsage?.primary_window_minutes ?? 300
-                      const codexUsed = Math.round(codexUsage?.primary_used_percent ?? 0)
+                      const codexUsed = getEffectiveUsedPercent(codexUsage?.primary_used_percent, codexUsage?.primary_reset)
                       const codexRemaining = 100 - codexUsed
                       const codexSevenDayPercent = codexUsage?.secondary_used_percent
                       const codexSevenDayReset = codexUsage?.secondary_reset
+                      const codexSessionActive = isCodexSessionActive(codexUsage?.primary_reset, codexUsed)
                       return (
                         <div key={providerId} className="expanded-card">
                           <div className="expanded-card-header">
@@ -4355,18 +4357,18 @@ function App() {
                           </div>
                           <div className="expanded-time-progress">
                             <div className="expanded-time-label-row">
-                              <span className="expanded-time-label">{isCodexSessionActive(codexUsage?.primary_reset, codexUsage?.primary_used_percent) ? 'Time Elapsed' : 'Session Status'}</span>
-                              <span className={`expanded-time-badge ${!isCodexSessionActive(codexUsage?.primary_reset, codexUsage?.primary_used_percent) ? 'waiting' : ''}`} style={!isCodexSessionActive(codexUsage?.primary_reset, codexUsage?.primary_used_percent) ? { color: '#22F0B6' } : {}}>
-                                {isCodexSessionActive(codexUsage?.primary_reset, codexUsage?.primary_used_percent) ? `Reset ${formatResetTime(codexUsage?.primary_reset, codexUsage?.primary_used_percent)}` : 'Waiting to start'}
+                              <span className="expanded-time-label">{codexSessionActive ? 'Time Elapsed' : 'Session Status'}</span>
+                              <span className={`expanded-time-badge ${!codexSessionActive ? 'waiting' : ''}`} style={!codexSessionActive ? { color: '#22F0B6' } : {}}>
+                                {codexSessionActive ? `Reset ${formatResetTime(codexUsage?.primary_reset, codexUsed)}` : 'Waiting to start'}
                               </span>
                             </div>
                             <div className="expanded-time-row">
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={isCodexSessionActive(codexUsage?.primary_reset, codexUsage?.primary_used_percent) ? 'currentColor' : '#22F0B6'} strokeWidth="2">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={codexSessionActive ? 'currentColor' : '#22F0B6'} strokeWidth="2">
                                 <circle cx="12" cy="12" r="10"></circle>
                                 <polyline points="12,6 12,12 16,14"></polyline>
                               </svg>
                               <div className="expanded-time-bar">
-                                {isCodexSessionActive(codexUsage?.primary_reset, codexUsage?.primary_used_percent) ? (
+                                {codexSessionActive ? (
                                   <div
                                     className="expanded-time-fill"
                                     style={{
