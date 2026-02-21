@@ -1,0 +1,96 @@
+{
+  "name": "meterai-vscode",
+  "displayName": "MeterAI",
+  "description": "Track Claude Code and OpenAI Codex usage in the VS Code status bar with battery meters and reset countdowns.",
+  "version": "0.1.0",
+  "publisher": "popeyeahwine",
+  "license": "GPL-3.0-or-later",
+  "icon": "media/icon.png",
+  "homepage": "https://github.com/PopeYeahWine/MeterAI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PopeYeahWine/MeterAI.git",
+    "directory": "vscode-extension"
+  },
+  "bugs": {
+    "url": "https://github.com/PopeYeahWine/MeterAI/issues"
+  },
+  "engines": {
+    "vscode": "^1.88.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "meter",
+    "usage",
+    "claude",
+    "codex",
+    "openai",
+    "statusbar",
+    "battery"
+  ],
+  "galleryBanner": {
+    "color": "#0f172a",
+    "theme": "dark"
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:meterai.refreshUsage",
+    "onCommand:meterai.openSettings"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "meterai.refreshUsage",
+        "title": "MeterAI: Refresh Usage"
+      },
+      {
+        "command": "meterai.openSettings",
+        "title": "MeterAI: Open Settings"
+      }
+    ],
+    "configuration": {
+      "title": "MeterAI",
+      "properties": {
+        "meterai.statusBar.refreshIntervalSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 30,
+          "maximum": 1800,
+          "description": "Refresh interval for MeterAI status bar usage data (seconds)."
+        },
+        "meterai.statusBar.showClaude": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Claude usage in the status bar."
+        },
+        "meterai.statusBar.showCodex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Codex usage in the status bar."
+        },
+        "meterai.statusBar.showResetCountdown": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show reset countdown in tooltip."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npm run compile && npx @vscode/vsce package",
+    "publish:vsce": "npm run compile && npx @vscode/vsce publish",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^2.26.0",
+    "@types/node": "^20.16.5",
+    "@types/vscode": "^1.88.0",
+    "typescript": "^5.6.3"
+  }
+}
