@@ -4,6 +4,8 @@ node_modules/
 # Build outputs
 dist/
 src-tauri/target/
+vscode-extension/out/
+*.vsix
 
 # IDE
 .vscode/

@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/PopeYeahWine/MeterAI/releases"><img src="https://img.shields.io/github/v/release/PopeYeahWine/MeterAI?style=flat-square&color=22F0B6" alt="Release"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=hpsc-sas.meterai-vscode"><img src="https://img.shields.io/visual-studio-marketplace/v/hpsc-sas.meterai-vscode?label=VS%20Code%20Extension&style=flat-square" alt="VS Code Extension"></a>
   <a href="https://github.com/PopeYeahWine/MeterAI/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue?style=flat-square" alt="License"></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="Platform">
 </p>
@@ -99,6 +100,17 @@
 
 ## Installation
 
+### VS Code Extension
+
+- Marketplace: https://marketplace.visualstudio.com/items?itemName=hpsc-sas.meterai-vscode
+- Install command:
+
+```bash
+code --install-extension hpsc-sas.meterai-vscode
+```
+
+> The VS Code extension is intentionally minimal (status bar view). For a richer visual interface, use the desktop app below.
+
 ### Download
 
 | Platform | File | Download |
@@ -183,6 +195,7 @@ Last updated: **2026-02-21**
 | Provider tracking | OpenAI API billing tracking (pay-as-you-go and hard-limit handling) |
 | UX & alerts | Threshold-based visual states and desktop notifications |
 | Reliability | Auto-refresh polling, stale-cache fallback, and Codex expired-window reset fix |
+| Ecosystem | VS Code extension MVP (status bar usage for Claude/Codex from local data) |
 | Provider catalog | 30+ providers with status badges (`Available`, `Coming soon`, `Planned`, `Awaiting partnership`) |
 | Security & privacy | Local-only storage, secure credential storage via OS keychain/credential store, no telemetry |
 | Distribution | Cross-platform packaging (Windows/macOS/Linux), update checks, release artifacts |
@@ -199,7 +212,7 @@ Last updated: **2026-02-21**
 | P2 | Data portability | Export/import config and usage history (`CSV`/`JSON`) |
 | P2 | Power-user UX | Mini mode, global hotkeys, multi-widget support |
 | P2 | Alerting integrations | Webhooks (Discord/Slack/Teams) and scheduled summaries |
-| P3 | Ecosystem extensions | VS Code extension, local REST API, Stream Deck plugin |
+| P3 | Ecosystem extensions | Publish VS Code extension, then local REST API and Stream Deck plugin |
 
 ---
 
