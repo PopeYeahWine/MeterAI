@@ -76,6 +76,7 @@ In VS Code:
 - `meterai.statusBar.showClaude`: show Claude usage
 - `meterai.statusBar.showCodex`: show Codex usage
 - `meterai.statusBar.showResetCountdown`: show reset countdown
+- `meterai.statusBar.checkExtensionUpdatesOnStartup`: trigger update check on VS Code startup
 
 ## Privacy
 
