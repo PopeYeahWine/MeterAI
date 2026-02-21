@@ -17,8 +17,8 @@ The VS Code extension UI lives in the status bar.
 
 If you want a full dashboard UI, MeterAI Desktop is available:
 
-![MeterAI Desktop - Expanded](media/screenshot-desktop-expanded.png)
-![MeterAI Desktop - Collapsed](media/screenshot-desktop-collapsed.png)
+![MeterAI Desktop - Expanded](https://raw.githubusercontent.com/PopeYeahWine/MeterAI/main/vscode-extension/media/screenshot-desktop-expanded.png)
+![MeterAI Desktop - Collapsed](https://raw.githubusercontent.com/PopeYeahWine/MeterAI/main/vscode-extension/media/screenshot-desktop-collapsed.png)
 
 ## Want a richer visual app?
 
@@ -30,7 +30,7 @@ If you want a full dashboard UI, MeterAI Desktop is available:
 After publication, install from the Visual Studio Code Marketplace:
 
 ```bash
-code --install-extension popeyeahwine.meterai-vscode
+code --install-extension hpsc-sas.meterai-vscode
 ```
 
 ## Package and Publish
