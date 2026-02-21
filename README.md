@@ -40,6 +40,7 @@
 
 - **Always-on-Top Widget** — Floating, draggable bar that stays visible while you work
 - **Claude Code Integration** — Automatic OAuth-based tracking for Claude Pro/Max (no API key needed)
+- **Claude API Integration** — Anthropic usage/cost tracking with Admin API key (`sk-ant-admin-...`)
 - **OpenAI Codex Integration** — Automatic local token-based tracking for ChatGPT Free/Go/Pro and compatible Codex plans
 - **Rolling Window Timer** — Real-time countdown to your next usage reset (5-hour window)
 - **Color Thresholds** — Visual indicators: green (OK), yellow (caution), orange (warning), red (critical)
@@ -55,8 +56,9 @@
 
 1. **For Claude Pro/Max users**: MeterAI automatically detects your Claude Code credentials and fetches your real usage data via Anthropic's OAuth API
 2. **For OpenAI Codex users**: MeterAI reads your local Codex session/token data and displays real usage windows without requiring an API key
-3. **For other providers**: Configure your API keys in the settings panel to enable tracking
-4. **The widget displays**:
+3. **For Claude API users**: Add an Anthropic Admin API key to fetch monthly usage/cost data
+4. **For other providers**: Configure your API keys in the settings panel to enable tracking
+5. **The widget displays**:
    - Current usage percentage with color-coded status
    - Time remaining until reset (rolling 5-hour window for Claude)
    - Quick access to expand/collapse and configure
@@ -73,7 +75,7 @@
 │  Provider List                                          │
 │  ├── Coding & Development                               │
 │  │   ├── Claude Pro/Max ████████░░ 58%                 │
-│  │   ├── Claude API (coming soon)                       │
+│  │   ├── Claude API $12.34 / $0.00                      │
 │  │   ├── OpenAI ChatGPT Plus/Pro                       │
 │  │   └── GitHub Copilot                                │
 │  ├── Chat                                               │
@@ -89,6 +91,7 @@
 | Provider | Auth Method |
 |----------|-------------|
 | <img src="assets/icons/claude.svg" width="16" height="16" /> **Claude Pro/Max** | Auto-detect (Claude Code OAuth) |
+| <img src="assets/icons/claude.svg" width="16" height="16" /> **Claude API** | API Key (Anthropic Admin key) |
 | <img src="assets/icons/openai.svg" width="16" height="16" /> **OpenAI Codex** | Auto-detect (local Codex token/session) |
 | <img src="assets/icons/openai.svg" width="16" height="16" /> **OpenAI API** | API Key |
 
@@ -163,91 +166,46 @@ MeterAI is designed with privacy as a core principle:
 
 ---
 
-## Development Roadmap
+## Product Roadmap
 
-We're actively developing MeterAI. Below is our comprehensive development plan.
-
----
-
-### Provider Integrations
-
-| Feature | Status | Description |
-|---------|--------|-------------|
-| <img src="assets/icons/claude.svg" width="16" height="16" /> Claude API | 🔜 Coming Soon | API key usage tracking for Anthropic API |
-| <img src="assets/icons/github-copilot.svg" width="16" height="16" /> GitHub Copilot | 🔜 Planned | OAuth integration for Copilot subscription usage |
-| <img src="assets/icons/google-gemini.svg" width="16" height="16" /> Google Gemini | 🔜 Planned | OAuth integration for Gemini API |
-| Multiple accounts | 🔜 Planned | Support tracking multiple accounts per provider |
+Last updated: **2026-02-21**
 
 ---
 
-### Usage Analytics & Data
+### Roadmap Done
 
-| Feature | Priority | Description |
-|---------|----------|-------------|
-| **Usage history graph** | P1 | Sparkline or mini-chart displaying usage evolution over the past 24 hours or 7 days. Visualize trends at a glance directly in the widget. |
-| **Depletion prediction** | P1 | Intelligent estimation of when your usage limit will be reached based on current consumption rate. Example: "At this pace, limit reached in 2h 15m". |
-| **Budget tracking** | P2 | Define daily or monthly spending budgets in $ for paid APIs. Receive alerts when approaching or exceeding your budget. |
-| **Export data (CSV/JSON)** | P2 | Export your complete usage history for external analysis, reporting, or backup purposes. |
-| **Import/export config** | P2 | Backup and restore your entire configuration (thresholds, providers, settings) to easily migrate between devices. |
-
----
-
-### Interface & User Experience
-
-| Feature | Priority | Description |
-|---------|----------|-------------|
-| **Dark/Light themes** | P1 | Theme toggle with support for dark mode, light mode, and custom color schemes. Adjust transparency and accent colors. |
-| **Mini-mode** | P1 | Ultra-compact display showing only a colored circle indicator. Percentage and details appear on hover. Minimal screen footprint. |
-| **Multiple widgets** | P2 | Ability to detach and display multiple independent widgets, one per provider. Position them anywhere on screen. |
-| **Smooth animations** | P2 | Fluid CSS transitions when state changes occur (e.g., warning → critical). Visual feedback for user actions. |
-| **Global hotkeys** | P2 | System-wide keyboard shortcuts to show/hide the widget, force refresh data, or quickly switch between providers. |
+| Area | Delivered |
+|------|-----------|
+| Core app | Always-on-top widget, compact/expanded/settings views, drag-to-move, tray integration |
+| Provider tracking | Claude Pro/Max OAuth usage tracking (5h and 7d windows) |
+| Provider tracking | Claude API billing tracking via Anthropic Admin Usage & Cost API (`claude-api`) |
+| Provider tracking | OpenAI Codex local tracking from Codex token/session logs (5h and 7d windows) |
+| Provider tracking | OpenAI API billing tracking (pay-as-you-go and hard-limit handling) |
+| UX & alerts | Threshold-based visual states and desktop notifications |
+| Reliability | Auto-refresh polling, stale-cache fallback, and Codex expired-window reset fix |
+| Provider catalog | 30+ providers with status badges (`Available`, `Coming soon`, `Planned`, `Awaiting partnership`) |
+| Security & privacy | Local-only storage, secure credential storage via OS keychain/credential store, no telemetry |
+| Distribution | Cross-platform packaging (Windows/macOS/Linux), update checks, release artifacts |
 
 ---
 
-### Notifications & Alerts
+### Roadmap To Do
 
-| Feature | Priority | Description |
-|---------|----------|-------------|
-| **Custom sounds** | P1 | Configurable audio alerts per threshold level. Different sounds for warning vs critical states. Option to mute specific providers. |
-| **Scheduled summaries** | P2 | Periodic notification summaries. Example: "Daily recap at 6 PM" showing your usage across all providers for the day. |
-| **Discord/Slack webhooks** | P2 | Send alerts to external services via webhooks. Get notified on Discord, Slack, or Microsoft Teams when thresholds are crossed. |
-
----
-
-### Security & Reliability
-
-| Feature | Priority | Description |
-|---------|----------|-------------|
-| **Local data encryption** | P1 | Encrypt the data.json file using OS-level protection (DPAPI on Windows, Keychain on macOS). Data remains protected even if the file is copied. |
-| **Integrity verification** | P2 | SHA-256 hash verification of critical files on startup. Detect any corruption or unauthorized modification of configuration. |
-| **Log rotation** | P2 | Automatic rotation and cleanup of log files to prevent disk space accumulation. Configurable retention period. |
-
----
-
-### Integrations & Ecosystem
-
-| Feature | Priority | Description |
-|---------|----------|-------------|
-| **VS Code extension** | P1 | Display your AI usage directly in the VS Code status bar. Quick access to usage stats without leaving your editor. |
-| **Local REST API** | P2 | Expose a localhost HTTP endpoint allowing other applications to query your usage data programmatically. |
-| **Stream Deck plugin** | P3 | Elgato Stream Deck integration displaying real-time usage on a physical button with color-coded status. |
-
----
-
-### Premium Features (Future)
-
-| Feature | Description |
-|---------|-------------|
-| **Cloud Sync** | Real-time usage synchronization across all your devices (desktop, mobile, web). Monitor your AI consumption from anywhere without needing Claude Code installed on every machine. Access your dashboard from any browser. |
-| **Mobile app** | Companion application for iOS and Android. Check your usage on the go, receive push notifications, and manage settings remotely. |
-| **Team dashboard** | Shared usage tracking for teams and organizations. Aggregate usage across team members, set team-wide budgets, and generate reports. |
-| **Buy credits** | Purchase AI credits (Anthropic, OpenAI) directly from the MeterAI interface. Seamless top-up when running low. |
+| Priority | Item | Scope |
+|----------|------|-------|
+| P1 | Coming-soon API providers (wave 1) | Implement `mistral`, `elevenlabs`, `stability`, `runway` |
+| P1 | Usage analytics | Add history graph + depletion prediction in widget/expanded view |
+| P1 | Code signing completion | Finalize SignPath approval and ship signed Windows builds |
+| P2 | Data portability | Export/import config and usage history (`CSV`/`JSON`) |
+| P2 | Power-user UX | Mini mode, global hotkeys, multi-widget support |
+| P2 | Alerting integrations | Webhooks (Discord/Slack/Teams) and scheduled summaries |
+| P3 | Ecosystem extensions | VS Code extension, local REST API, Stream Deck plugin |
 
 ---
 
 ### Feature Requests
 
-Have an idea? [Open an issue](https://github.com/PopeYeahWine/MeterAI/issues) with the `enhancement` label!
+Have an idea? [Open an issue](https://github.com/PopeYeahWine/MeterAI/issues) with the `enhancement` label.
 
 ---
 

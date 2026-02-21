@@ -103,6 +103,20 @@ interface OpenAIUsageResult {
   daily_usage: Array<{ date: string; cost_usd: number }>
 }
 
+interface ClaudeApiUsageResult {
+  success: boolean
+  error: string | null
+  usage_usd: number | null
+  limit_usd: number | null
+  percent: number | null
+  is_pay_as_you_go: boolean
+  is_admin_key: boolean
+  requires_admin_key: boolean
+  daily_costs: Array<{ date: string; cost_usd: number }> | null
+  period_start: string | null
+  period_end: string | null
+}
+
 interface CodexUsageResult {
   success: boolean
   error: string | null
@@ -236,6 +250,7 @@ interface ProviderSettingsPanelProps {
   setHasClaudeCodeToken: React.Dispatch<React.SetStateAction<boolean>>
   setEnabledProviders: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
   refreshClaudeCodeUsage: () => Promise<void>
+  refreshClaudeApiUsage: () => Promise<void>
   tokenStatus: TokenStatus | null
   setTokenStatus: React.Dispatch<React.SetStateAction<TokenStatus | null>>
   customProviderNames: Record<string, string>
@@ -254,6 +269,7 @@ const ProviderSettingsPanel = ({
   setHasClaudeCodeToken,
   setEnabledProviders,
   refreshClaudeCodeUsage,
+  refreshClaudeApiUsage,
   tokenStatus,
   setTokenStatus,
   customProviderNames,
@@ -272,12 +288,19 @@ const ProviderSettingsPanel = ({
   const [openaiKeyPreview, setOpenaiKeyPreview] = useState<string | null>(null)
   const [openaiSaveMessage, setOpenaiSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [openaiKeyVisible, setOpenaiKeyVisible] = useState(false)
+  // Claude API states
+  const [claudeApiKey, setClaudeApiKey] = useState('')
+  const [claudeApiHasKey, setClaudeApiHasKey] = useState(false)
+  const [claudeApiKeyPreview, setClaudeApiKeyPreview] = useState<string | null>(null)
+  const [claudeApiSaveMessage, setClaudeApiSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [claudeApiKeyVisible, setClaudeApiKeyVisible] = useState(false)
 
   // Compute values needed for useEffect BEFORE any conditional returns
   const isOpenAIProvider = providerId === 'openai-api'
+  const isClaudeApiProvider = providerId === 'claude-api'
   const providerDef = providerId ? AI_PROVIDERS.find(p => p.id === providerId) : null
 
-  // Check OpenAI key status when opening panel - MUST be before any conditional returns
+  // Check API key status when opening panel - MUST be before any conditional returns
   useEffect(() => {
     const checkKey = async () => {
       if (isOpenAIProvider) {
@@ -293,10 +316,23 @@ const ProviderSettingsPanel = ({
         } catch (e) {
           console.error('Failed to check OpenAI API key:', e)
         }
+      } else if (isClaudeApiProvider) {
+        try {
+          const hasKey = await invoke<boolean>('has_claude_api_key')
+          setClaudeApiHasKey(hasKey)
+          if (hasKey) {
+            const preview = await invoke<string | null>('get_claude_api_key_preview')
+            setClaudeApiKeyPreview(preview)
+          } else {
+            setClaudeApiKeyPreview(null)
+          }
+        } catch (e) {
+          console.error('Failed to check Claude API key:', e)
+        }
       }
     }
     checkKey()
-  }, [isOpenAIProvider])
+  }, [isOpenAIProvider, isClaudeApiProvider])
 
   // Early returns AFTER all hooks
   if (!providerId) return null
@@ -534,6 +570,43 @@ const ProviderSettingsPanel = ({
     }
   }
 
+  // Claude API handlers
+  const handleSaveClaudeApiKey = async () => {
+    if (!claudeApiKey.trim()) {
+      setClaudeApiSaveMessage({ type: 'error', text: 'Please enter an API key' })
+      setTimeout(() => setClaudeApiSaveMessage(null), 3000)
+      return
+    }
+    try {
+      await invoke('save_claude_api_key', { apiKey: claudeApiKey })
+      setClaudeApiSaveMessage({ type: 'success', text: 'API key saved successfully' })
+      setClaudeApiHasKey(true)
+      setClaudeApiKey('')
+      setClaudeApiKeyVisible(false)
+      setEnabledProviders(prev => ({ ...prev, 'claude-api': true }))
+      await refreshClaudeApiUsage()
+      setTimeout(() => setClaudeApiSaveMessage(null), 3000)
+    } catch (e) {
+      setClaudeApiSaveMessage({ type: 'error', text: `Failed: ${e}` })
+      setTimeout(() => setClaudeApiSaveMessage(null), 5000)
+    }
+  }
+
+  const handleRemoveClaudeApiKey = async () => {
+    try {
+      await invoke('remove_claude_api_key')
+      setClaudeApiSaveMessage({ type: 'success', text: 'API key removed' })
+      setClaudeApiHasKey(false)
+      setClaudeApiKey('')
+      setEnabledProviders(prev => ({ ...prev, 'claude-api': false }))
+      await refreshClaudeApiUsage()
+      setTimeout(() => setClaudeApiSaveMessage(null), 3000)
+    } catch (e) {
+      setClaudeApiSaveMessage({ type: 'error', text: `Failed: ${e}` })
+      setTimeout(() => setClaudeApiSaveMessage(null), 5000)
+    }
+  }
+
   return (
     <div className="provider-settings-overlay" onClick={onClose}>
       <div className="provider-settings-panel" onClick={e => e.stopPropagation()}>
@@ -721,8 +794,125 @@ const ProviderSettingsPanel = ({
                 )}
               </div>
             </div>
+          ) : isClaudeApiProvider ? (
+            <div className="config-detection-box">
+              <div className="config-detection-status">
+                <span className={`config-detection-dot ${claudeApiHasKey ? 'detected' : 'not-detected'}`}></span>
+                <span className="config-detection-text">
+                  {claudeApiHasKey ? (
+                    <>Admin API Key <strong>configured</strong></>
+                  ) : (
+                    <>Admin API Key <strong>not configured</strong></>
+                  )}
+                </span>
+              </div>
+
+              <div className="openai-api-key-section">
+                {claudeApiHasKey ? (
+                  <>
+                    <div className="openai-api-key-configured">
+                      <div className="openai-key-preview">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+                        </svg>
+                        <span className="key-preview-text">
+                          {claudeApiKeyVisible ? claudeApiKeyPreview : '••••••••••...'}
+                        </span>
+                      </div>
+                      <button
+                        className="openai-key-visibility-btn"
+                        onClick={() => setClaudeApiKeyVisible(!claudeApiKeyVisible)}
+                        title={claudeApiKeyVisible ? 'Hide preview' : 'Show preview'}
+                      >
+                        {claudeApiKeyVisible ? (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                            <line x1="1" y1="1" x2="23" y2="23"></line>
+                          </svg>
+                        ) : (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+                    <button
+                      className="openai-api-key-btn remove full-width"
+                      onClick={handleRemoveClaudeApiKey}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M3 6h18"></path>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                      </svg>
+                      Remove API Key
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="openai-api-key-input-wrapper">
+                      <input
+                        type={claudeApiKeyVisible ? 'text' : 'password'}
+                        className="openai-api-key-input"
+                        placeholder="sk-ant-admin-..."
+                        value={claudeApiKey}
+                        onChange={(e) => setClaudeApiKey(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveClaudeApiKey()
+                        }}
+                      />
+                      <button
+                        className="openai-key-visibility-btn"
+                        onClick={() => setClaudeApiKeyVisible(!claudeApiKeyVisible)}
+                        title={claudeApiKeyVisible ? 'Hide key' : 'Show key'}
+                      >
+                        {claudeApiKeyVisible ? (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                            <line x1="1" y1="1" x2="23" y2="23"></line>
+                          </svg>
+                        ) : (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+
+                    <button
+                      className="openai-api-key-btn save full-width"
+                      onClick={handleSaveClaudeApiKey}
+                      disabled={!claudeApiKey.trim()}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                        <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                        <polyline points="7 3 7 8 15 8"></polyline>
+                      </svg>
+                      Save API Key
+                    </button>
+
+                    <div className="openai-api-help">
+                      Usage/Cost API docs: <a href="#" onClick={(e) => {
+                        e.preventDefault()
+                        import('@tauri-apps/api/shell').then(({ open }) => {
+                          open('https://docs.anthropic.com/en/api/usage-cost-api')
+                        })
+                      }}>docs.anthropic.com</a>
+                    </div>
+                  </>
+                )}
+
+                {claudeApiSaveMessage && (
+                  <div className={`openai-api-message ${claudeApiSaveMessage.type}`}>
+                    {claudeApiSaveMessage.text}
+                  </div>
+                )}
+              </div>
+            </div>
           ) : (
-            /* Claude Credentials Detection */
+            /* Claude Code Credentials Detection */
             <div className="config-detection-box">
               <div className="config-detection-status">
                 <span className={`config-detection-dot ${configStatus.detected ? 'detected' : 'not-detected'}`}></span>
@@ -1175,6 +1365,8 @@ function App() {
     return null
   })
   const [hasClaudeCodeToken, setHasClaudeCodeToken] = useState(false)
+  const [claudeApiUsage, setClaudeApiUsage] = useState<ClaudeApiUsageResult | null>(null)
+  const [hasClaudeApiKey, setHasClaudeApiKey] = useState(false)
   const [openaiUsage, setOpenaiUsage] = useState<OpenAIUsageResult | null>(null)
   const [hasOpenaiApiKey, setHasOpenaiApiKey] = useState(false)
   const [codexUsage, setCodexUsage] = useState<CodexUsageResult | null>(null)
@@ -1419,6 +1611,14 @@ function App() {
           }
         } catch (e) {
           console.log('Claude Code integration not available:', e)
+        }
+
+        // Claude API integration
+        try {
+          const hasKey = await invoke<boolean>('has_claude_api_key')
+          setHasClaudeApiKey(hasKey)
+        } catch (e) {
+          console.log('Claude API integration not available:', e)
         }
 
         // Codex local integration
@@ -1722,6 +1922,73 @@ function App() {
       clearInterval(refreshInterval)
     }
   }, [refreshCodexUsage])
+
+  // Refresh Claude API usage function
+  const refreshClaudeApiUsage = useCallback(async () => {
+    try {
+      const claudeApiEnabled = enabledProviders['claude-api']
+
+      const hasKey = await invoke<boolean>('has_claude_api_key')
+      setHasClaudeApiKey(prev => prev !== hasKey ? hasKey : prev)
+
+      if (!claudeApiEnabled || !hasKey) {
+        return
+      }
+
+      console.log('MeterAI: Refreshing Claude API usage...')
+      const result = await invoke<ClaudeApiUsageResult>('get_claude_api_usage')
+
+      setClaudeApiUsage(prev => {
+        if (!prev || prev.percent !== result.percent ||
+            prev.usage_usd !== result.usage_usd ||
+            prev.error !== result.error) {
+          return result
+        }
+        return prev
+      })
+
+      if (result.success) {
+        const percent = result.percent ?? 0
+        const newPercent = Math.round(percent)
+        setProvidersUsage(prev => {
+          const current = prev['claude-api']
+          if (!current || current.percent !== newPercent) {
+            return {
+              ...prev,
+              'claude-api': {
+                used: newPercent,
+                limit: 100,
+                percent: newPercent
+              }
+            }
+          }
+          return prev
+        })
+      } else {
+        console.log('MeterAI: Claude API usage fetch returned success=false:', result.error)
+      }
+    } catch (e) {
+      console.log('MeterAI: Failed to refresh Claude API usage:', e)
+    }
+  }, [enabledProviders])
+
+  // Auto-refresh Claude API usage every 5 minutes
+  useEffect(() => {
+    const POLL_INTERVAL = 5 * 60 * 1000
+
+    const initialRefresh = setTimeout(() => {
+      refreshClaudeApiUsage()
+    }, 5500)
+
+    const refreshInterval = setInterval(() => {
+      refreshClaudeApiUsage()
+    }, POLL_INTERVAL)
+
+    return () => {
+      clearTimeout(initialRefresh)
+      clearInterval(refreshInterval)
+    }
+  }, [refreshClaudeApiUsage])
 
   // Refresh OpenAI usage function
   const refreshOpenAIUsage = useCallback(async () => {
@@ -3267,11 +3534,12 @@ function App() {
 
   // Compact banner mode
   if (viewMode === 'compact') {
-    const anthropicProvider = providers.find(p => p.provider_type === 'anthropic')
     const anthropicUsage = providersUsage['anthropic'] || { percent: 0 }
 
-    // Claude is configured if we have Claude Code token OR API key
-    const isAnthropicConfigured = hasClaudeCodeToken || (anthropicProvider?.enabled && anthropicProvider?.has_api_key)
+    // Claude Pro/Max is configured only via Claude Code token
+    const isAnthropicConfigured = hasClaudeCodeToken
+    // Claude API is configured if we have an Anthropic API key
+    const isClaudeApiConfigured = hasClaudeApiKey
     // OpenAI is configured if we have an API key (use the state we track)
     const isOpenaiConfigured = hasOpenaiApiKey
     // Codex is configured if local token is detected
@@ -3293,6 +3561,27 @@ function App() {
       || (claudeSubscriptionType
         ? `Claude ${claudeSubscriptionType.charAt(0).toUpperCase() + claudeSubscriptionType.slice(1)}`
         : 'Claude Pro') // Default fallback
+
+    // Claude API: same billing visual model as OpenAI API
+    const claudeApiUsageUsd = claudeApiUsage?.usage_usd ?? 0
+    const claudeApiLimitUsd = claudeApiUsage?.limit_usd ?? 0
+    const claudeApiRemainingPercent = claudeApiUsage?.success
+      ? (claudeApiUsage.is_pay_as_you_go
+        ? (claudeApiLimitUsd === 0 && claudeApiUsageUsd === 0
+          ? 0
+          : Math.max(0, 100 - Math.min(claudeApiUsageUsd * 1, 100)))
+        : (claudeApiLimitUsd > 0
+          ? Math.max(0, 100 * (1 - claudeApiUsageUsd / claudeApiLimitUsd))
+          : 0))
+      : 0
+    const claudeApiRemainingDisplay = claudeApiUsage?.success
+      ? (claudeApiUsage.is_pay_as_you_go
+        ? (claudeApiLimitUsd > 0
+          ? `$${Math.max(0, claudeApiLimitUsd - claudeApiUsageUsd).toFixed(2)} / $${claudeApiLimitUsd.toFixed(2)}`
+          : `$${claudeApiUsageUsd.toFixed(2)} / $0.00`)
+        : `${Math.round(100 - (claudeApiUsage.percent ?? 0))}%`)
+      : '$0.00 / $0.00'
+    const claudeApiDisplayName = customProviderNames['claude-api'] || 'Claude API'
 
     // OpenAI: calculate remaining credits for battery display
     // IMPORTANT: $0/$0 (no credits, no limit) = EMPTY battery (0%)
@@ -3379,7 +3668,7 @@ function App() {
         </div>
 
         {/* Providers - only show if at least one is enabled */}
-        {(enabledProviders['claude-pro-max'] || enabledProviders['openai-api'] || enabledProviders['openai-codex']) && (
+        {(enabledProviders['claude-pro-max'] || enabledProviders['claude-api'] || enabledProviders['openai-api'] || enabledProviders['openai-codex']) && (
           <div className="banner-providers">
             {/* Claude/Anthropic - new compact 2-line layout */}
             {/* Line 1: Claude Pro/Max + Battery */}
@@ -3411,6 +3700,28 @@ function App() {
                     <span className="provider-time">--</span>
                   </div>
                 )}
+              </div>
+            )}
+
+            {enabledProviders['claude-api'] && (
+              <div
+                className={`banner-provider-compact ${!isClaudeApiConfigured ? 'disabled' : ''}`}
+                title={isClaudeApiConfigured
+                  ? `${claudeApiDisplayName}: ${claudeApiRemainingDisplay}`
+                  : `${claudeApiDisplayName}: Not configured`}
+              >
+                <div className="provider-line-top">
+                  <span className="provider-name">{claudeApiDisplayName}</span>
+                  <Battery
+                    percent={claudeApiRemainingPercent}
+                    color="#d97706"
+                    disabled={!isClaudeApiConfigured}
+                    uniqueId="claude-api-compact"
+                  />
+                </div>
+                <div className="provider-line-bottom">
+                  <span className="provider-remaining">{isClaudeApiConfigured ? claudeApiRemainingDisplay : '--'}</span>
+                </div>
               </div>
             )}
 
@@ -3716,13 +4027,12 @@ function App() {
 
   // Expanded view (detailed usage)
   if (viewMode === 'expanded') {
-    const anthropicProvider = providers.find(p => p.provider_type === 'anthropic')
-    const openaiProvider = providers.find(p => p.provider_type === 'openai')
     const anthropicUsageLocal = providersUsage['anthropic'] || { used: 0, limit: 100, percent: 0 }
-    const openaiUsageLocal = providersUsage['openai'] || { used: 0, limit: 100, percent: 0 }
 
-    // Check if Claude Code token is available (for real usage data)
-    const isAnthropicConfigured = hasClaudeCodeToken || (anthropicProvider?.enabled && anthropicProvider?.has_api_key)
+    // Claude Pro/Max uses Claude Code token
+    const isAnthropicConfigured = hasClaudeCodeToken
+    // Claude API uses Anthropic API key
+    const isClaudeApiConfigured = hasClaudeApiKey
     // OpenAI is configured if we have an API key
     const isOpenaiConfigured = hasOpenaiApiKey
     // Codex is configured if local token is detected
@@ -3745,6 +4055,26 @@ function App() {
       || (claudeSubscriptionTypeExpanded
         ? `Claude ${claudeSubscriptionTypeExpanded.charAt(0).toUpperCase() + claudeSubscriptionTypeExpanded.slice(1)}`
         : 'Claude Pro') // Default fallback
+
+    const claudeApiUsageUsdExpanded = claudeApiUsage?.usage_usd ?? 0
+    const claudeApiLimitUsdExpanded = claudeApiUsage?.limit_usd ?? 0
+    const claudeApiRemainingPercentExpanded = claudeApiUsage?.success
+      ? (claudeApiUsage.is_pay_as_you_go
+        ? (claudeApiLimitUsdExpanded === 0 && claudeApiUsageUsdExpanded === 0
+          ? 0
+          : Math.max(0, 100 - Math.min(claudeApiUsageUsdExpanded * 1, 100)))
+        : (claudeApiLimitUsdExpanded > 0
+          ? Math.max(0, 100 * (1 - claudeApiUsageUsdExpanded / claudeApiLimitUsdExpanded))
+          : 0))
+      : 0
+    const claudeApiRemainingDisplayExpanded = claudeApiUsage?.success
+      ? (claudeApiUsage.is_pay_as_you_go
+        ? (claudeApiLimitUsdExpanded > 0
+          ? `$${Math.max(0, claudeApiLimitUsdExpanded - claudeApiUsageUsdExpanded).toFixed(2)} / $${claudeApiLimitUsdExpanded.toFixed(2)}`
+          : `$${claudeApiUsageUsdExpanded.toFixed(2)} / $0.00`)
+        : `${Math.round(100 - (claudeApiUsage.percent ?? 0))}%`)
+      : '$0.00 / $0.00'
+    const claudeApiDisplayNameExpanded = customProviderNames['claude-api'] || 'Claude API'
 
     // OpenAI: calculate remaining credits for battery display
     // IMPORTANT: $0/$0 (no credits, no limit) = EMPTY battery (0%)
@@ -3861,6 +4191,7 @@ function App() {
           setHasClaudeCodeToken={setHasClaudeCodeToken}
           setEnabledProviders={setEnabledProviders}
           refreshClaudeCodeUsage={refreshClaudeCodeUsage}
+          refreshClaudeApiUsage={refreshClaudeApiUsage}
           tokenStatus={tokenStatus}
           setTokenStatus={setTokenStatus}
           customProviderNames={customProviderNames}
@@ -3891,7 +4222,7 @@ function App() {
           </div>
 
           {/* Providers - only show if at least one is enabled */}
-          {(enabledProviders['claude-pro-max'] || enabledProviders['openai-api'] || enabledProviders['openai-codex']) && (
+          {(enabledProviders['claude-pro-max'] || enabledProviders['claude-api'] || enabledProviders['openai-api'] || enabledProviders['openai-codex']) && (
             <div className="banner-providers">
               {/* Claude/Anthropic - new compact 2-line layout */}
               {enabledProviders['claude-pro-max'] && (
@@ -3921,6 +4252,25 @@ function App() {
                       <span className="provider-time">--</span>
                     </div>
                   )}
+                </div>
+              )}
+              {enabledProviders['claude-api'] && (
+                <div
+                  className={`banner-provider-compact ${!isClaudeApiConfigured ? 'disabled' : ''}`}
+                  title={isClaudeApiConfigured ? `${claudeApiDisplayNameExpanded}: ${claudeApiRemainingDisplayExpanded}` : `${claudeApiDisplayNameExpanded}: Not configured`}
+                >
+                  <div className="provider-line-top">
+                    <span className="provider-name">{claudeApiDisplayNameExpanded}</span>
+                    <Battery
+                      percent={claudeApiRemainingPercentExpanded}
+                      color="#d97706"
+                      disabled={!isClaudeApiConfigured}
+                      uniqueId="claude-api-expanded"
+                    />
+                  </div>
+                  <div className="provider-line-bottom">
+                    <span className="provider-remaining">{isClaudeApiConfigured ? claudeApiRemainingDisplayExpanded : '--'}</span>
+                  </div>
                 </div>
               )}
               {/* OpenAI - new compact 2-line layout */}
@@ -4106,22 +4456,26 @@ function App() {
                     const isEnabled = enabledProviders[providerId] ?? false
                     const provUsage = providersUsage[providerId] || { used: 0, limit: 100, percent: 0 }
                     const backendProvider = providers.find(p => p.provider_type === providerId)
-                    // Check if this is a Claude provider that can use Claude Code OAuth
-                    const isClaudeProvider = providerId === 'claude-pro-max' || providerDef.parentId === 'anthropic'
+                    const isClaudeProvider = providerId === 'claude-pro-max'
+                    const isClaudeApiProvider = providerId === 'claude-api'
                     const isCodexProvider = providerId === 'openai-codex'
                     const isConfigured = backendProvider?.has_api_key ||
                       (isClaudeProvider && hasClaudeCodeToken) ||
+                      (isClaudeApiProvider && hasClaudeApiKey) ||
                       (isCodexProvider && hasCodexToken)
                     const isRefreshing = refreshingProvider === providerId
 
                     // Special handling for Claude with real OAuth data
                     // Show detailed card if we have Claude Code token, even if no active session (usage=0)
                     const isClaudeWithRealData = isClaudeProvider && hasClaudeCodeToken && (claudeCodeUsage?.success || claudeCodeUsage !== null)
+                    const isClaudeApiWithRealData = isClaudeApiProvider && hasClaudeApiKey && (claudeApiUsage?.success || claudeApiUsage !== null)
                     const isCodexWithRealData = isCodexProvider && hasCodexToken && (codexUsage?.success || codexUsage !== null)
 
                     // Used percentage for display text
                     const usedPercent = isClaudeWithRealData
                       ? Math.round(claudeFiveHourUsedPercent ?? 0)
+                      : isClaudeApiWithRealData
+                        ? Math.round(claudeApiUsage?.percent ?? 0)
                       : provUsage.percent
 
                     // Remaining percentage for progress bar (inverted: 100 = full, 0 = empty)
@@ -4135,6 +4489,8 @@ function App() {
                       try {
                         if (isClaudeProvider && hasClaudeCodeToken) {
                           await refreshClaudeCodeUsage()
+                        } else if (isClaudeApiProvider && hasClaudeApiKey) {
+                          await refreshClaudeApiUsage()
                         } else if (isCodexProvider && hasCodexToken) {
                           await refreshCodexUsage()
                         } else if (isOpenAIProvider && hasOpenaiApiKey) {
@@ -4381,6 +4737,122 @@ function App() {
                                     className="expanded-time-fill waiting"
                                     style={{
                                       width: '100%'
+                                    }}
+                                  />
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    }
+
+                    // Full detailed card for Claude API with admin key
+                    const claudeApiUsedUsdCard = claudeApiUsage?.usage_usd ?? 0
+                    const claudeApiLimitUsdCard = claudeApiUsage?.limit_usd ?? 0
+                    const claudeApiRemainingPercentCard = claudeApiUsage?.success
+                      ? (claudeApiUsage.is_pay_as_you_go
+                        ? (claudeApiLimitUsdCard === 0 && claudeApiUsedUsdCard === 0
+                          ? 0
+                          : Math.max(0, 100 - Math.min(claudeApiUsedUsdCard * 1, 100)))
+                        : (claudeApiLimitUsdCard > 0
+                          ? Math.max(0, 100 * (1 - claudeApiUsedUsdCard / claudeApiLimitUsdCard))
+                          : 0))
+                      : 0
+
+                    if (showDetailedCard && isClaudeApiWithRealData) {
+                      return (
+                        <div key={providerId} className="expanded-card">
+                          <div className="expanded-card-header">
+                            <label className={`expanded-toggle-mini ${!isEnabled ? 'activable' : ''}`} onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                checked={isEnabled}
+                                onChange={(e) => {
+                                  setEnabledProviders(prev => ({ ...prev, [providerId]: e.target.checked }))
+                                  if (backendProvider) toggleProviderEnabled(providerId, e.target.checked)
+                                }}
+                              />
+                              <span className="expanded-toggle-slider-mini"></span>
+                            </label>
+                            <span className="expanded-card-icon" style={{ background: providerDef.color }}>
+                              {providerDef.icon}
+                            </span>
+                            <span className="expanded-card-name-inline">
+                              <span className="expanded-card-brand">{providerDef.brand}</span>
+                              <span className="expanded-card-plan">{providerDef.name}</span>
+                            </span>
+                            <button
+                              className={`refresh-btn ${isRefreshing ? 'spinning' : ''}`}
+                              onClick={refreshProvider}
+                              title="Refresh"
+                              disabled={isRefreshing}
+                            >
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M23 4v6h-6"></path>
+                                <path d="M1 20v-6h6"></path>
+                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                              </svg>
+                            </button>
+                            <button
+                              className="provider-settings-btn"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setProviderSettingsOpen(providerId)
+                              }}
+                              title="Provider settings"
+                            >
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <circle cx="12" cy="12" r="3"></circle>
+                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                              </svg>
+                            </button>
+                            <span className="provider-info-icon" title={`${providerDef.name} - ${providerDef.website}`}>?</span>
+                          </div>
+                          <div className="expanded-usage-block">
+                            <div className="expanded-usage-label-row">
+                              <span className="expanded-usage-label">Usage</span>
+                              {claudeApiUsage?.success ? (
+                                claudeApiUsage.is_pay_as_you_go ? (
+                                  <span className="expanded-usage-badge badge-openai">
+                                    ${claudeApiUsedUsdCard.toFixed(2)} (Pay as you go)
+                                  </span>
+                                ) : (
+                                  <span className="expanded-usage-badge badge-openai">
+                                    ${claudeApiUsedUsdCard.toFixed(2)} / ${claudeApiUsage.limit_usd?.toFixed(2) ?? '∞'}
+                                  </span>
+                                )
+                              ) : claudeApiUsage?.requires_admin_key ? (
+                                <span className="expanded-usage-badge badge-openai badge-error" title={claudeApiUsage.error ?? undefined}>
+                                  Admin key required
+                                </span>
+                              ) : claudeApiUsage?.error ? (
+                                <span className="expanded-usage-badge badge-openai badge-error" title={claudeApiUsage.error}>
+                                  Error
+                                </span>
+                              ) : (
+                                <span className="expanded-usage-badge badge-openai">Loading...</span>
+                              )}
+                            </div>
+                            <div className="expanded-usage-row">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+                              </svg>
+                              <div className="expanded-usage-bar-container">
+                                {claudeApiRemainingPercentCard <= 0 ? (
+                                  <div
+                                    className="expanded-usage-bar-fill empty"
+                                    style={{
+                                      width: '3%',
+                                      background: '#ef4444'
+                                    }}
+                                  />
+                                ) : (
+                                  <div
+                                    className="expanded-usage-bar-fill"
+                                    style={{
+                                      width: `${Math.min(claudeApiRemainingPercentCard, 100)}%`,
+                                      background: getUsageGradientStyle(claudeApiRemainingPercentCard, providerId)
                                     }}
                                   />
                                 )}

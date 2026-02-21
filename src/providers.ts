@@ -64,7 +64,7 @@ export const AI_PROVIDERS: ProviderDefinition[] = [
     hasUsageApi: true,
     usageMethod: 'api-key',
     parentId: 'anthropic',
-    trackingStatus: 'coming-soon'
+    trackingStatus: 'available'
   },
 
   // OpenAI (Plus/Pro merged - NO official API for subscription usage) - Impossible

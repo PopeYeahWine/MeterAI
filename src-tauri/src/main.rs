@@ -1870,6 +1870,306 @@ pub struct OpenAIDailyCostSummary {
     pub cost_usd: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicCostReportResponse {
+    pub data: Vec<AnthropicCostBucket>,
+    pub has_more: bool,
+    pub next_page: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicCostBucket {
+    pub starting_at: String,
+    pub ending_at: String,
+    pub results: Vec<AnthropicCostItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicCostItem {
+    pub amount: String, // Cost in lowest units (cents) as decimal string
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicDailyCostSummary {
+    pub date: String,
+    pub cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeApiUsageResult {
+    pub success: bool,
+    pub error: Option<String>,
+    /// Total usage in USD for current billing period
+    pub usage_usd: Option<f64>,
+    /// Hard limit in USD (not provided by Anthropic Usage/Cost API)
+    pub limit_usd: Option<f64>,
+    /// Usage percentage (0-100). For pay-as-you-go this is 0.
+    pub percent: Option<f64>,
+    /// Anthropic usage/cost endpoint behaves as pay-as-you-go from this app's perspective
+    pub is_pay_as_you_go: bool,
+    /// Whether current key looks like an admin key
+    pub is_admin_key: bool,
+    /// True when the endpoint rejected the key because admin access is required
+    pub requires_admin_key: bool,
+    /// Daily breakdown
+    pub daily_costs: Option<Vec<AnthropicDailyCostSummary>>,
+    /// Billing period start date
+    pub period_start: Option<String>,
+    /// Billing period end date
+    pub period_end: Option<String>,
+}
+
+fn parse_decimal_amount(value: &str) -> f64 {
+    value.parse::<f64>().unwrap_or(0.0)
+}
+
+/// Fetch Anthropic API usage/cost using Admin Usage & Cost API
+async fn fetch_claude_api_usage(api_key: &str) -> Result<ClaudeApiUsageResult, AppError> {
+    let client = reqwest::Client::new();
+    let now = Utc::now();
+    let start_date = now.format("%Y-%m-01T00:00:00Z").to_string();
+    let end_date = (now + chrono::Duration::days(1))
+        .format("%Y-%m-%dT00:00:00Z")
+        .to_string();
+    let start_day = start_date.split('T').next().unwrap_or("").to_string();
+    let end_day = end_date.split('T').next().unwrap_or("").to_string();
+    let is_admin_key = api_key.starts_with("sk-ant-admin");
+
+    let mut all_buckets: Vec<AnthropicCostBucket> = Vec::new();
+    let mut next_page: Option<String> = None;
+    let mut pages_fetched = 0;
+
+    loop {
+        pages_fetched += 1;
+        if pages_fetched > 20 {
+            break;
+        }
+
+        let mut url = reqwest::Url::parse("https://api.anthropic.com/v1/organizations/cost_report")
+            .map_err(|e| AppError::ConfigError(e.to_string()))?;
+        {
+            let mut query = url.query_pairs_mut();
+            query.append_pair("starting_at", &start_date);
+            query.append_pair("ending_at", &end_date);
+            query.append_pair("bucket_width", "1d");
+            query.append_pair("limit", "31");
+            if let Some(page) = &next_page {
+                query.append_pair("page", page);
+            }
+        }
+
+        let response = client
+            .get(url)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .send()
+            .await
+            .map_err(|e| AppError::NetworkError(e.to_string()))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let body_lower = body.to_lowercase();
+            let requires_admin = status.as_u16() == 401
+                || status.as_u16() == 403
+                || body_lower.contains("admin")
+                || body_lower.contains("organization")
+                || body_lower.contains("not available for individual");
+
+            if requires_admin {
+                return Err(AppError::ApiError(
+                    "Anthropic Usage & Cost API requires an Admin API key (sk-ant-admin...). Standard API keys are not supported for this endpoint.".to_string(),
+                ));
+            }
+
+            return Err(AppError::ApiError(format!(
+                "Anthropic API error (status {})",
+                status
+            )));
+        }
+
+        let report = response
+            .json::<AnthropicCostReportResponse>()
+            .await
+            .map_err(|e| AppError::ApiError(format!("Failed to parse Anthropic cost report: {}", e)))?;
+
+        all_buckets.extend(report.data.into_iter());
+
+        if report.has_more {
+            if let Some(page) = report.next_page {
+                next_page = Some(page);
+                continue;
+            }
+        }
+        break;
+    }
+
+    let mut total_cents = 0.0_f64;
+    let mut daily_costs: Vec<AnthropicDailyCostSummary> = Vec::new();
+
+    for bucket in all_buckets {
+        let bucket_cents: f64 = bucket
+            .results
+            .iter()
+            .map(|item| parse_decimal_amount(&item.amount))
+            .sum();
+        total_cents += bucket_cents;
+        let date = bucket
+            .starting_at
+            .split('T')
+            .next()
+            .unwrap_or("Unknown")
+            .to_string();
+        daily_costs.push(AnthropicDailyCostSummary {
+            date,
+            cost_usd: (bucket_cents / 100.0).max(0.0),
+        });
+    }
+
+    daily_costs.sort_by(|a, b| a.date.cmp(&b.date));
+
+    Ok(ClaudeApiUsageResult {
+        success: true,
+        error: None,
+        usage_usd: Some((total_cents / 100.0).max(0.0)),
+        limit_usd: None,
+        percent: Some(0.0),
+        is_pay_as_you_go: true,
+        is_admin_key,
+        requires_admin_key: false,
+        daily_costs: Some(daily_costs),
+        period_start: Some(start_day),
+        period_end: Some(end_day),
+    })
+}
+
+/// Get Anthropic Claude API usage via Admin Usage & Cost API
+#[tauri::command]
+async fn get_claude_api_usage(
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<ClaudeApiUsageResult, String> {
+    let api_key = {
+        let state = state.lock().unwrap();
+        state
+            .providers
+            .get("anthropic")
+            .and_then(|p| p.config.api_key.clone())
+    };
+
+    let api_key = match api_key {
+        Some(key) if !key.is_empty() => key,
+        _ => {
+            return Ok(ClaudeApiUsageResult {
+                success: false,
+                error: Some(
+                    "No Claude API key configured. Please add your API key in settings."
+                        .to_string(),
+                ),
+                usage_usd: None,
+                limit_usd: None,
+                percent: None,
+                is_pay_as_you_go: true,
+                is_admin_key: false,
+                requires_admin_key: false,
+                daily_costs: None,
+                period_start: None,
+                period_end: None,
+            });
+        }
+    };
+
+    let is_admin_key = api_key.starts_with("sk-ant-admin");
+
+    match fetch_claude_api_usage(&api_key).await {
+        Ok(result) => Ok(result),
+        Err(e) => {
+            let error_text = e.to_string();
+            let requires_admin_key = error_text.to_lowercase().contains("admin api key");
+            Ok(ClaudeApiUsageResult {
+                success: false,
+                error: Some(error_text),
+                usage_usd: None,
+                limit_usd: None,
+                percent: None,
+                is_pay_as_you_go: true,
+                is_admin_key,
+                requires_admin_key,
+                daily_costs: None,
+                period_start: None,
+                period_end: None,
+            })
+        }
+    }
+}
+
+/// Check if Claude API key is configured
+#[tauri::command]
+fn has_claude_api_key(state: tauri::State<Mutex<AppState>>) -> bool {
+    let state = state.lock().unwrap();
+    state
+        .providers
+        .get("anthropic")
+        .map(|p| p.config.has_api_key && p.config.api_key.is_some())
+        .unwrap_or(false)
+}
+
+/// Save Claude API key
+#[tauri::command]
+fn save_claude_api_key(api_key: String, state: tauri::State<Mutex<AppState>>) -> Result<(), String> {
+    if api_key.is_empty() {
+        return Err("API key cannot be empty".to_string());
+    }
+
+    // Anthropic keys are expected to start with sk-ant-
+    if !api_key.starts_with("sk-ant-") {
+        return Err("Invalid API key format. Anthropic API keys start with 'sk-ant-'.".to_string());
+    }
+
+    save_api_key("anthropic", &api_key).map_err(|e| e.to_string())?;
+
+    let mut state = state.lock().unwrap();
+    if let Some(provider) = state.providers.get_mut("anthropic") {
+        provider.config.api_key = Some(api_key);
+        provider.config.has_api_key = true;
+    }
+    save_state(&state);
+
+    Ok(())
+}
+
+/// Remove Claude API key
+#[tauri::command]
+fn remove_claude_api_key(state: tauri::State<Mutex<AppState>>) -> Result<(), String> {
+    delete_api_key("anthropic").map_err(|e| e.to_string())?;
+
+    let mut state = state.lock().unwrap();
+    if let Some(provider) = state.providers.get_mut("anthropic") {
+        provider.config.api_key = None;
+        provider.config.has_api_key = false;
+    }
+    save_state(&state);
+
+    Ok(())
+}
+
+/// Get Claude API key preview (first 12 chars + masked rest)
+#[tauri::command]
+fn get_claude_api_key_preview(state: tauri::State<Mutex<AppState>>) -> Option<String> {
+    let state = state.lock().unwrap();
+    state
+        .providers
+        .get("anthropic")
+        .and_then(|p| p.config.api_key.as_ref())
+        .map(|key| {
+            if key.len() > 12 {
+                format!("{}...", &key[..12])
+            } else {
+                key.clone()
+            }
+        })
+}
+
 /// Fetch OpenAI API usage
 async fn fetch_openai_usage(api_key: &str) -> Result<OpenAIUsageResult, AppError> {
     let client = reqwest::Client::new();
@@ -2245,6 +2545,11 @@ fn main() {
             save_openai_api_key,
             remove_openai_api_key,
             get_openai_api_key_preview,
+            get_claude_api_usage,
+            has_claude_api_key,
+            save_claude_api_key,
+            remove_claude_api_key,
+            get_claude_api_key_preview,
             get_codex_usage,
             has_codex_token,
             append_drag_debug_log,
