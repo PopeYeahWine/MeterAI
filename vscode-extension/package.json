@@ -2,7 +2,7 @@
   "name": "meterai-vscode",
   "displayName": "MeterAI",
   "description": "Minimal status-bar usage meter for Claude Code and OpenAI Codex in VS Code. Full visual desktop app available on GitHub.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "hpsc-sas",
   "license": "GPL-3.0-or-later",
   "icon": "media/icon.png",
@@ -39,8 +39,7 @@
   "activationEvents": [
     "onStartupFinished",
     "onCommand:meterai.refreshUsage",
-    "onCommand:meterai.openSettings",
-    "onCommand:meterai.checkForUpdates"
+    "onCommand:meterai.openSettings"
   ],
   "contributes": {
     "commands": [
@@ -51,10 +50,6 @@
       {
         "command": "meterai.openSettings",
         "title": "MeterAI: Open Settings"
-      },
-      {
-        "command": "meterai.checkForUpdates",
-        "title": "MeterAI: Check Extension Updates"
       }
     ],
     "configuration": {
@@ -62,7 +57,7 @@
       "properties": {
         "meterai.statusBar.refreshIntervalSeconds": {
           "type": "number",
-          "default": 120,
+          "default": 60,
           "minimum": 30,
           "maximum": 1800,
           "description": "Refresh interval for MeterAI status bar usage data (seconds)."
@@ -81,11 +76,6 @@
           "type": "boolean",
           "default": true,
           "description": "Show reset countdown in tooltip."
-        },
-        "meterai.statusBar.checkExtensionUpdatesOnStartup": {
-          "type": "boolean",
-          "default": true,
-          "description": "Trigger a VS Code extension update check at startup."
         }
       }
     }

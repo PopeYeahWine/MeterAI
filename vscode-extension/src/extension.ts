@@ -366,7 +366,7 @@ function formatResetCountdown(resetIso: string | null): string {
   return hours > 0 ? `${hours}h ${String(minutes).padStart(2, '0')}m` : `${minutes}m`
 }
 
-function buildBatteryBar(remainingPercent: number | null, segments = 4): string {
+function buildBatteryBar(remainingPercent: number | null, segments = 20): string {
   if (remainingPercent === null) return `║${'░'.repeat(segments)}║`
   const safe = Math.max(0, Math.min(100, Math.round(remainingPercent)))
   const filled = Math.round((safe / 100) * segments)
@@ -443,35 +443,13 @@ function updateProviderItem(
 function getConfig() {
   const cfg = vscode.workspace.getConfiguration('meterai.statusBar')
   return {
-    refreshIntervalSeconds: cfg.get<number>('refreshIntervalSeconds', 120),
+    refreshIntervalSeconds: cfg.get<number>('refreshIntervalSeconds', 60),
     showClaude: cfg.get<boolean>('showClaude', true),
     showCodex: cfg.get<boolean>('showCodex', true),
     showResetCountdown: cfg.get<boolean>('showResetCountdown', true),
-    checkExtensionUpdatesOnStartup: cfg.get<boolean>('checkExtensionUpdatesOnStartup', true)
   }
 }
 
-async function checkForExtensionUpdates(userTriggered: boolean): Promise<void> {
-  try {
-    await vscode.commands.executeCommand('workbench.extensions.action.checkForUpdates')
-    log('Triggered VS Code extension update check')
-
-    if (userTriggered) {
-      try {
-        await vscode.commands.executeCommand('workbench.extensions.action.listOutdatedExtensions')
-      } catch {
-        await vscode.commands.executeCommand('workbench.view.extensions')
-      }
-      vscode.window.showInformationMessage('Extension updates checked. Review available updates in the Extensions view.')
-    }
-  } catch (error) {
-    const message = `Failed to trigger extension update check: ${String(error)}`
-    log(message)
-    if (userTriggered) {
-      vscode.window.showWarningMessage(message)
-    }
-  }
-}
 
 async function refreshStatusBar(userTriggered = false): Promise<void> {
   const cfg = getConfig()
@@ -507,7 +485,7 @@ async function refreshStatusBar(userTriggered = false): Promise<void> {
     }
   }
 
-  tooltip.appendMarkdown('\n[Refresh now](command:meterai.refreshUsage) · [Check updates](command:meterai.checkForUpdates) · [Settings](command:meterai.openSettings)')
+  tooltip.appendMarkdown('\n[Refresh now](command:meterai.refreshUsage) · [Settings](command:meterai.openSettings)')
   brandStatusBarItem.tooltip = tooltip
   brandStatusBarItem.show()
 
@@ -582,12 +560,6 @@ export function activate(context: vscode.ExtensionContext): void {
   )
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('meterai.checkForUpdates', async () => {
-      await checkForExtensionUpdates(true)
-    })
-  )
-
-  context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('meterai.statusBar')) {
         restartTimer(context)
@@ -598,14 +570,6 @@ export function activate(context: vscode.ExtensionContext): void {
 
   restartTimer(context)
   void refreshStatusBar(false)
-  if (getConfig().checkExtensionUpdatesOnStartup) {
-    const startupUpdateCheckTimer = setTimeout(() => {
-      void checkForExtensionUpdates(false)
-    }, 8000)
-    context.subscriptions.push({
-      dispose: () => clearTimeout(startupUpdateCheckTimer)
-    })
-  }
   log('MeterAI VS Code extension activated')
 }
 
