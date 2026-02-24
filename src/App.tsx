@@ -1872,14 +1872,9 @@ function App() {
       console.log('MeterAI: Refreshing Codex usage...')
       const result = await invoke<CodexUsageResult>('get_codex_usage')
 
-      setCodexUsage(prev => {
-        if (!prev || prev.primary_used_percent !== result.primary_used_percent ||
-            prev.primary_reset !== result.primary_reset ||
-            prev.total_tokens !== result.total_tokens) {
-          return result
-        }
-        return prev
-      })
+      // Always update state so the render re-evaluates getEffectiveUsedPercent()
+      // with the current time (detects expired reset windows even when raw data is unchanged)
+      setCodexUsage(result)
 
       if (result.success) {
         const percent = getEffectiveUsedPercent(result.primary_used_percent, result.primary_reset)
@@ -1905,9 +1900,9 @@ function App() {
     }
   }, [enabledProviders])
 
-  // Auto-refresh Codex usage every 2 minutes
+  // Auto-refresh Codex usage every 60 seconds
   useEffect(() => {
-    const POLL_INTERVAL = 2 * 60 * 1000
+    const POLL_INTERVAL = 60 * 1000
 
     const initialRefresh = setTimeout(() => {
       refreshCodexUsage()

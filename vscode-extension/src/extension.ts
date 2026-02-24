@@ -367,10 +367,19 @@ function formatResetCountdown(resetIso: string | null): string {
 }
 
 function buildBatteryBar(remainingPercent: number | null, segments = 20): string {
-  if (remainingPercent === null) return `║${'░'.repeat(segments)}║`
+  const displayChars = Math.ceil(segments / 2)
+  if (remainingPercent === null) return `[${'░'.repeat(displayChars)}]`
   const safe = Math.max(0, Math.min(100, Math.round(remainingPercent)))
   const filled = Math.round((safe / 100) * segments)
-  return `║${'█'.repeat(filled)}${'░'.repeat(segments - filled)}║`
+  let bar = ''
+  for (let i = 0; i < segments; i += 2) {
+    const left = i < filled
+    const right = (i + 1) < filled
+    if (left && right) bar += '█'
+    else if (left) bar += '▒'
+    else bar += '░'
+  }
+  return `[${bar}]`
 }
 
 function getItemColors(remainingPercent: number | null): { color?: vscode.ThemeColor; backgroundColor?: vscode.ThemeColor } {
