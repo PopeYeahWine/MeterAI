@@ -2,7 +2,7 @@
   "name": "meterai-vscode",
   "displayName": "MeterAI",
   "description": "Minimal status-bar usage meter for Claude Code and OpenAI Codex in VS Code. Full visual desktop app available on GitHub.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "hpsc-sas",
   "license": "GPL-3.0-or-later",
   "icon": "media/icon.png",
