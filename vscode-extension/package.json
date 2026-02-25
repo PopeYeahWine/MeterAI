@@ -37,9 +37,7 @@
   },
   "main": "./out/extension.js",
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:meterai.refreshUsage",
-    "onCommand:meterai.openSettings"
+    "onStartupFinished"
   ],
   "contributes": {
     "commands": [
