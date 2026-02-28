@@ -126,6 +126,8 @@ interface CodexUsageResult {
   secondary_used_percent: number | null
   secondary_window_minutes: number | null
   secondary_reset: string | null
+  limit_id: string | null
+  limit_name: string | null
   plan_type: string | null
   total_tokens: number | null
   last_total_tokens: number | null
@@ -172,6 +174,53 @@ const getEffectiveUsedPercent = (
   } catch {
     return safePercent
   }
+}
+
+const toTitleWords = (value: string): string =>
+  value
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ')
+
+const formatClaudePlanName = (subscriptionType: string | null | undefined): string => {
+  const normalized = (subscriptionType ?? '').trim().toLowerCase()
+  if (!normalized) return 'Claude Pro'
+  if (normalized === 'pro' || normalized === 'max') {
+    return `Claude ${normalized.charAt(0).toUpperCase() + normalized.slice(1)}`
+  }
+  return `Claude ${toTitleWords(normalized)}`
+}
+
+const formatCodexPlanName = (
+  planType: string | null | undefined,
+  limitName: string | null | undefined
+): string => {
+  const normalizedPlanType = (planType ?? '').trim()
+  if (normalizedPlanType.length > 0) {
+    return `Codex ${toTitleWords(normalizedPlanType)}`
+  }
+
+  const normalizedLimitName = (limitName ?? '').trim()
+  if (normalizedLimitName.length > 0) {
+    const lowered = normalizedLimitName.toLowerCase()
+    if (lowered.includes('codex-spark')) return 'Codex Spark'
+
+    const codexIdx = lowered.indexOf('codex')
+    if (codexIdx >= 0) {
+      const suffix = normalizedLimitName
+        .slice(codexIdx + 'codex'.length)
+        .replace(/^[-_\s]+/, '')
+      if (suffix.length > 0) {
+        return `Codex ${toTitleWords(suffix)}`
+      }
+      return 'OpenAI Codex'
+    }
+
+    return `Codex ${toTitleWords(normalizedLimitName)}`
+  }
+
+  return 'OpenAI Codex'
 }
 
 // Custom Stepper Component for threshold inputs
@@ -3551,11 +3600,8 @@ function App() {
 
     // Get subscription type for display name (Pro, Max, etc.)
     const claudeSubscriptionType = claudeCodeUsage?.subscription_type || null
-    // Format display name: use custom name if set, else "Claude Max" or "Claude Pro" based on subscription_type
     const claudeDisplayName = customProviderNames['claude-pro-max']
-      || (claudeSubscriptionType
-        ? `Claude ${claudeSubscriptionType.charAt(0).toUpperCase() + claudeSubscriptionType.slice(1)}`
-        : 'Claude Pro') // Default fallback
+      || formatClaudePlanName(claudeSubscriptionType)
 
     // Claude API: same billing visual model as OpenAI API
     const claudeApiUsageUsd = claudeApiUsage?.usage_usd ?? 0
@@ -3624,7 +3670,8 @@ function App() {
       ? getTimeProgressWithWindow(codexUsage.primary_reset, codexWindowMinutes)
       : 0
     const codexTimerColor = getTimeGradientColor(codexTimeProgress)
-    const codexDisplayName = customProviderNames['openai-codex'] || 'OpenAI Codex'
+    const codexDisplayName = customProviderNames['openai-codex']
+      || formatCodexPlanName(codexUsage?.plan_type, codexUsage?.limit_name)
 
     // Format reset time for compact display - pass usage percent to detect waiting state
     const compactResetDisplay = claudeCodeUsage?.success && claudeCodeUsage?.five_hour_reset
@@ -4045,11 +4092,8 @@ function App() {
 
     // Get subscription type for display name (Pro, Max, etc.)
     const claudeSubscriptionTypeExpanded = claudeCodeUsage?.subscription_type || null
-    // Format display name: use custom name if set, else "Claude Max" or "Claude Pro" based on subscription_type
     const claudeDisplayNameExpanded = customProviderNames['claude-pro-max']
-      || (claudeSubscriptionTypeExpanded
-        ? `Claude ${claudeSubscriptionTypeExpanded.charAt(0).toUpperCase() + claudeSubscriptionTypeExpanded.slice(1)}`
-        : 'Claude Pro') // Default fallback
+      || formatClaudePlanName(claudeSubscriptionTypeExpanded)
 
     const claudeApiUsageUsdExpanded = claudeApiUsage?.usage_usd ?? 0
     const claudeApiLimitUsdExpanded = claudeApiUsage?.limit_usd ?? 0
@@ -4111,7 +4155,9 @@ function App() {
       ? getTimeProgressWithWindow(codexUsage.primary_reset, codexWindowMinutesExpanded)
       : 0
     const codexTimerColorExpanded = getTimeGradientColor(codexTimeProgressExpanded)
-    const codexDisplayNameExpanded = customProviderNames['openai-codex'] || 'OpenAI Codex'
+    const codexDisplayNameExpanded = customProviderNames['openai-codex']
+      || formatCodexPlanName(codexUsage?.plan_type, codexUsage?.limit_name)
+    const detectedClaudePlanLabel = formatClaudePlanName(claudeCodeUsage?.subscription_type)
 
     // Get time progress for color calculation (0% = just started, 100% = about to reset)
     const timeProgressExpanded = claudeCodeUsage?.success && claudeCodeUsage?.five_hour_reset
@@ -4158,9 +4204,9 @@ function App() {
                   <circle cx="12" cy="12" r="10"></circle>
                 </svg>
               </div>
-              <h3 className="popup-title">Claude Code Detected</h3>
+              <h3 className="popup-title">{detectedClaudePlanLabel} Detected</h3>
               <p className="popup-message">
-                We found your Claude Code credentials. Enable automatic usage tracking?
+                We found your {detectedClaudePlanLabel} credentials. Enable automatic usage tracking?
               </p>
               <div className="popup-actions">
                 <button className="popup-btn primary" onClick={handleClaudeDetectedEnable}>
@@ -4465,6 +4511,11 @@ function App() {
                     const isClaudeWithRealData = isClaudeProvider && hasClaudeCodeToken && (claudeCodeUsage?.success || claudeCodeUsage !== null)
                     const isClaudeApiWithRealData = isClaudeApiProvider && hasClaudeApiKey && (claudeApiUsage?.success || claudeApiUsage !== null)
                     const isCodexWithRealData = isCodexProvider && hasCodexToken && (codexUsage?.success || codexUsage !== null)
+                    const resolvedProviderPlanName = providerId === 'claude-pro-max'
+                      ? claudeDisplayNameExpanded
+                      : providerId === 'openai-codex'
+                        ? codexDisplayNameExpanded
+                        : providerDef.name
 
                     // Used percentage for display text
                     const usedPercent = isClaudeWithRealData
@@ -4521,7 +4572,7 @@ function App() {
                             </span>
                             <span className="expanded-card-name-inline">
                               <span className="expanded-card-brand">{providerDef.brand}</span>
-                              <span className="expanded-card-plan">{providerDef.name}</span>
+                              <span className="expanded-card-plan">{resolvedProviderPlanName}</span>
                             </span>
                             <button
                               className={`refresh-btn ${isRefreshing ? 'spinning' : ''}`}
@@ -4556,7 +4607,7 @@ function App() {
                                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
                               </svg>
                             </button>
-                            <span className="provider-info-icon" title={`${providerDef.name} - ${providerDef.website}`}>?</span>
+                            <span className="provider-info-icon" title={`${resolvedProviderPlanName} - ${providerDef.website}`}>?</span>
                           </div>
                           <div className="expanded-usage-block">
                             <div className="expanded-usage-label-row">
@@ -4649,7 +4700,7 @@ function App() {
                             </span>
                             <span className="expanded-card-name-inline">
                               <span className="expanded-card-brand">{providerDef.brand}</span>
-                              <span className="expanded-card-plan">{providerDef.name}</span>
+                              <span className="expanded-card-plan">{resolvedProviderPlanName}</span>
                             </span>
                             <button
                               className={`refresh-btn ${isRefreshing ? 'spinning' : ''}`}
@@ -4676,7 +4727,7 @@ function App() {
                                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
                               </svg>
                             </button>
-                            <span className="provider-info-icon" title={`${providerDef.name} - ${providerDef.website}`}>?</span>
+                            <span className="provider-info-icon" title={`${resolvedProviderPlanName} - ${providerDef.website}`}>?</span>
                           </div>
                           <div className="expanded-usage-block">
                             <div className="expanded-usage-label-row">
@@ -5018,7 +5069,7 @@ function App() {
                         </span>
                         <div className="provider-card-mini-info">
                           <span className="provider-card-mini-name">{providerDef.brand}</span>
-                          <span className="provider-card-mini-version">{providerDef.name}</span>
+                          <span className="provider-card-mini-version">{resolvedProviderPlanName}</span>
                         </div>
                         <div className="provider-card-mini-status">
                           {!isAvailable ? (

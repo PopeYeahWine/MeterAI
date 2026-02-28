@@ -9,6 +9,7 @@ type JsonRecord = Record<string, unknown>
 interface ClaudeCredentials {
   claudeAiOauth?: {
     accessToken?: string
+    subscriptionType?: string
   }
   accessToken?: string
 }
@@ -25,13 +26,29 @@ interface ClaudeUsageResponse {
 interface CodexUsageSnapshot {
   usedPercent: number | null
   resetIso: string | null
+  plan: string | null
+}
+
+interface CodexLimitCandidate {
+  limitId: string | null
+  usedPercent: number | null
+  resetIso: string | null
+  plan: string | null
 }
 
 interface ProviderSnapshot {
   label: string
   usedPercent: number | null
   resetIso: string | null
+  plan?: string | null
+  email?: string | null
   error?: string
+}
+
+interface ClaudeCredentialInfo {
+  token: string
+  subscriptionType: string | null
+  email: string | null
 }
 
 let brandStatusBarItem: vscode.StatusBarItem
@@ -44,6 +61,87 @@ let extensionVersion = 'dev'
 function log(line: string): void {
   const now = new Date().toISOString()
   output.appendLine(`[${now}] ${line}`)
+}
+
+function parseString(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function escapeMarkdown(value: string): string {
+  return value.replace(/([\\`*_{}[\]()#+\-.!|>])/g, '\\$1')
+}
+
+function toTitleWords(value: string): string {
+  return value
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ')
+}
+
+function formatClaudePlanName(subscriptionType: string | null): string | null {
+  const normalized = parseString(subscriptionType)?.toLowerCase() ?? null
+  if (!normalized) return null
+  if (normalized === 'pro' || normalized === 'max') {
+    return `Claude ${normalized.charAt(0).toUpperCase() + normalized.slice(1)}`
+  }
+  return `Claude ${toTitleWords(normalized)}`
+}
+
+function formatCodexPlanName(planType: string | null, limitName: string | null): string | null {
+  const normalizedPlanType = parseString(planType)
+  if (normalizedPlanType) {
+    return `Codex ${toTitleWords(normalizedPlanType)}`
+  }
+
+  const normalizedLimitName = parseString(limitName)
+  if (!normalizedLimitName) return null
+
+  const lowered = normalizedLimitName.toLowerCase()
+  if (lowered.includes('codex-spark')) return 'Codex Spark'
+
+  const codexIdx = lowered.indexOf('codex')
+  if (codexIdx >= 0) {
+    const suffix = normalizedLimitName
+      .slice(codexIdx + 'codex'.length)
+      .replace(/^[-_\s]+/, '')
+    return suffix.length > 0 ? `Codex ${toTitleWords(suffix)}` : 'OpenAI Codex'
+  }
+
+  return `Codex ${toTitleWords(normalizedLimitName)}`
+}
+
+function base64UrlDecode(segment: string): string | null {
+  try {
+    const normalized = segment.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4)
+    return Buffer.from(padded, 'base64').toString('utf8')
+  } catch {
+    return null
+  }
+}
+
+function parseJwtPayload(token: string | null): JsonRecord | null {
+  if (!token) return null
+  const parts = token.split('.')
+  if (parts.length < 2) return null
+  const payloadRaw = base64UrlDecode(parts[1])
+  if (!payloadRaw) return null
+  try {
+    const parsed = JSON.parse(payloadRaw) as unknown
+    if (!parsed || typeof parsed !== 'object') return null
+    return parsed as JsonRecord
+  } catch {
+    return null
+  }
+}
+
+function extractEmailFromJwt(token: string | null): string | null {
+  const payload = parseJwtPayload(token)
+  if (!payload) return null
+  return parseString(payload.email)
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -107,18 +205,31 @@ function extractClaudeToken(credentials: ClaudeCredentials): string | null {
   return null
 }
 
-async function getClaudeToken(): Promise<string | null> {
+function extractClaudeCredentialInfo(credentials: ClaudeCredentials): ClaudeCredentialInfo | null {
+  const token = extractClaudeToken(credentials)
+  if (!token) return null
+  const subscriptionType = parseString(credentials.claudeAiOauth?.subscriptionType)
+  const email = extractEmailFromJwt(token)
+  return { token, subscriptionType, email }
+}
+
+async function getClaudeCredentialInfo(): Promise<ClaudeCredentialInfo | null> {
   const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
   if (envToken && envToken.trim().length > 0) {
-    return envToken
+    const token = envToken.trim()
+    return {
+      token,
+      subscriptionType: null,
+      email: extractEmailFromJwt(token)
+    }
   }
 
   for (const p of getClaudeCredentialPaths()) {
     if (!(await fileExists(p))) continue
     const data = await readJson(p)
     if (!data) continue
-    const token = extractClaudeToken(data as unknown as ClaudeCredentials)
-    if (token) return token
+    const info = extractClaudeCredentialInfo(data as unknown as ClaudeCredentials)
+    if (info) return info
   }
 
   return null
@@ -148,8 +259,8 @@ function httpGet(url: string, headers: Record<string, string>): Promise<{ status
 }
 
 async function readClaudeUsage(): Promise<ProviderSnapshot> {
-  const token = await getClaudeToken()
-  if (!token) {
+  const credentialInfo = await getClaudeCredentialInfo()
+  if (!credentialInfo) {
     return {
       label: 'Claude',
       usedPercent: null,
@@ -160,7 +271,7 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
 
   try {
     const response = await httpGet('https://api.anthropic.com/api/oauth/usage', {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${credentialInfo.token}`,
       'anthropic-beta': 'oauth-2025-04-20',
       'User-Agent': `meterai-vscode/${extensionVersion}`,
       'Content-Type': 'application/json'
@@ -183,13 +294,17 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
     return {
       label: 'Claude',
       usedPercent: getEffectiveUsedPercent(used, resetIso),
-      resetIso
+      resetIso,
+      plan: formatClaudePlanName(credentialInfo.subscriptionType),
+      email: credentialInfo.email
     }
   } catch (error) {
     return {
       label: 'Claude',
       usedPercent: null,
       resetIso: null,
+      plan: formatClaudePlanName(credentialInfo.subscriptionType),
+      email: credentialInfo.email,
       error: `Request failed: ${String(error)}`
     }
   }
@@ -197,13 +312,42 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
 
 function parseNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (trimmed.length === 0) return null
+    const parsed = Number(trimmed)
+    if (Number.isFinite(parsed)) return parsed
+  }
   return null
 }
 
-function parseResetFromEpoch(value: unknown): string | null {
-  const epochSeconds = parseNumber(value)
-  if (epochSeconds === null) return null
-  return new Date(epochSeconds * 1000).toISOString()
+function asRecord(value: unknown): JsonRecord | null {
+  if (!value || typeof value !== 'object') return null
+  return value as JsonRecord
+}
+
+function parseResetFromEpoch(epoch: number): string | null {
+  if (!Number.isFinite(epoch)) return null
+  const epochMs = Math.abs(epoch) >= 1e12 ? epoch : epoch * 1000
+  const resetMs = new Date(epochMs).getTime()
+  if (Number.isNaN(resetMs)) return null
+  return new Date(resetMs).toISOString()
+}
+
+function parseResetValue(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (trimmed.length === 0) return null
+    const numeric = parseNumber(trimmed)
+    if (numeric !== null) return parseResetFromEpoch(numeric)
+    const isoMs = new Date(trimmed).getTime()
+    if (Number.isNaN(isoMs)) return null
+    return new Date(isoMs).toISOString()
+  }
+
+  const numeric = parseNumber(value)
+  if (numeric === null) return null
+  return parseResetFromEpoch(numeric)
 }
 
 async function findLatestCodexSessionFile(rootDir: string): Promise<string | null> {
@@ -257,6 +401,10 @@ async function parseLatestCodexUsage(sessionFile: string): Promise<CodexUsageSna
   }
 
   const lines = content.split(/\r?\n/)
+  let latestAny: CodexLimitCandidate | null = null
+  let latestNonZero: CodexLimitCandidate | null = null
+  let latestCodex: CodexLimitCandidate | null = null
+
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim()
     if (!line) continue
@@ -268,26 +416,53 @@ async function parseLatestCodexUsage(sessionFile: string): Promise<CodexUsageSna
       continue
     }
 
-    const payload = parsed.payload as JsonRecord | undefined
+    const payload = asRecord(parsed.payload)
     if (!payload || payload.type !== 'token_count') continue
 
-    const rateLimits = payload.rate_limits as JsonRecord | undefined
-    const primary = rateLimits?.primary as JsonRecord | undefined
+    const rateLimits = asRecord(payload.rate_limits) ?? asRecord(payload.rateLimits)
+    const primary = rateLimits
+      ? (asRecord(rateLimits.primary) ?? asRecord(asRecord(rateLimits.windows)?.primary))
+      : null
     if (!primary) continue
 
-    const usedPercent = parseNumber(primary.used_percent)
-    const resetIso = parseResetFromEpoch(primary.resets_at)
+    const usedPercent = parseNumber(primary.used_percent ?? primary.usedPercent)
+    const resetIso = parseResetValue(primary.resets_at ?? primary.resetsAt)
+    const rawLimitId = rateLimits?.limit_id ?? rateLimits?.limitId
+    const limitId = typeof rawLimitId === 'string' && rawLimitId.trim().length > 0
+      ? rawLimitId.trim().toLowerCase()
+      : null
+    const planType = parseString(rateLimits?.plan_type ?? rateLimits?.planType)
+    const limitName = parseString(rateLimits?.limit_name ?? rateLimits?.limitName)
+    const plan = formatCodexPlanName(planType, limitName)
 
+    const candidate: CodexLimitCandidate = {
+      limitId,
+      usedPercent,
+      resetIso,
+      plan
+    }
+
+    if (!latestAny) latestAny = candidate
+    if (!latestNonZero && usedPercent !== null && usedPercent > 0) latestNonZero = candidate
+    if (!latestCodex && limitId === 'codex') latestCodex = candidate
+
+    if (latestCodex) break
+  }
+
+  const selected = latestCodex ?? latestNonZero ?? latestAny
+  if (selected) {
     return {
-      usedPercent: getEffectiveUsedPercent(usedPercent, resetIso),
-      resetIso
+      usedPercent: getEffectiveUsedPercent(selected.usedPercent ?? 0, selected.resetIso),
+      resetIso: selected.resetIso,
+      plan: selected.plan
     }
   }
 
   // No token_count event yet: session not started -> full battery / waiting reset
   return {
     usedPercent: 0,
-    resetIso: null
+    resetIso: null,
+    plan: null
   }
 }
 
@@ -297,11 +472,14 @@ async function readCodexUsage(): Promise<ProviderSnapshot> {
   const sessionsDir = path.join(codexDir, 'sessions')
 
   const authJson = await readJson(authPath)
-  const accessToken = authJson?.tokens && typeof authJson.tokens === 'object'
-    ? (authJson.tokens as JsonRecord).access_token
+  const authTokens = authJson?.tokens && typeof authJson.tokens === 'object'
+    ? authJson.tokens as JsonRecord
     : null
+  const accessToken = parseString(authTokens?.access_token)
+  const idToken = parseString(authTokens?.id_token)
+  const email = extractEmailFromJwt(idToken) ?? extractEmailFromJwt(accessToken)
 
-  if (typeof accessToken !== 'string' || accessToken.length === 0) {
+  if (!accessToken) {
     return {
       label: 'Codex',
       usedPercent: null,
@@ -317,6 +495,8 @@ async function readCodexUsage(): Promise<ProviderSnapshot> {
       label: 'Codex',
       usedPercent: 0,
       resetIso: null,
+      email,
+      plan: null
     }
   }
 
@@ -333,7 +513,9 @@ async function readCodexUsage(): Promise<ProviderSnapshot> {
   return {
     label: 'Codex',
     usedPercent: snapshot.usedPercent,
-    resetIso: snapshot.resetIso
+    resetIso: snapshot.resetIso,
+    email,
+    plan: snapshot.plan
   }
 }
 
@@ -437,6 +619,12 @@ function updateProviderItem(
   } else {
     tooltip.appendMarkdown(`- Status: unavailable\n`)
   }
+  if (snapshot.plan) {
+    tooltip.appendMarkdown(`- Plan: ${escapeMarkdown(snapshot.plan)}\n`)
+  }
+  if (snapshot.email) {
+    tooltip.appendMarkdown(`- Account: ${escapeMarkdown(snapshot.email)}\n`)
+  }
   if (snapshot.error) {
     tooltip.appendMarkdown(`- Error: ${snapshot.error}\n`)
   }
@@ -485,6 +673,12 @@ async function refreshStatusBar(userTriggered = false): Promise<void> {
     if (snapshot.usedPercent !== null) {
       const countdown = cfg.showResetCountdown ? ` · reset ${formatResetCountdown(snapshot.resetIso)}` : ''
       tooltip.appendMarkdown(`- **${snapshot.label}**: ${snapshot.usedPercent}%${countdown}\n`)
+      if (snapshot.plan) {
+        tooltip.appendMarkdown(`  Plan: ${escapeMarkdown(snapshot.plan)}\n`)
+      }
+      if (snapshot.email) {
+        tooltip.appendMarkdown(`  Account: ${escapeMarkdown(snapshot.email)}\n`)
+      }
     } else {
       tooltip.appendMarkdown(`- **${snapshot.label}**: unavailable`)
       if (snapshot.error) {

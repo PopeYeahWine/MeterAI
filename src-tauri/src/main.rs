@@ -1629,12 +1629,20 @@ pub struct CodexUsageResult {
     pub secondary_used_percent: Option<f64>,
     pub secondary_window_minutes: Option<i64>,
     pub secondary_reset: Option<String>,
+    pub limit_id: Option<String>,
+    pub limit_name: Option<String>,
     pub plan_type: Option<String>,
     pub total_tokens: Option<u64>,
     pub last_total_tokens: Option<u64>,
 }
 
 fn get_codex_base_dir() -> Option<PathBuf> {
+    if let Ok(custom_home) = std::env::var("CODEX_HOME") {
+        let trimmed = custom_home.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
     dirs::home_dir().map(|h| h.join(".codex"))
 }
 
@@ -1711,6 +1719,7 @@ fn find_latest_codex_session_file() -> Option<PathBuf> {
 fn value_as_f64(v: Option<&serde_json::Value>) -> Option<f64> {
     match v {
         Some(serde_json::Value::Number(n)) => n.as_f64(),
+        Some(serde_json::Value::String(s)) => s.trim().parse::<f64>().ok(),
         _ => None,
     }
 }
@@ -1718,6 +1727,11 @@ fn value_as_f64(v: Option<&serde_json::Value>) -> Option<f64> {
 fn value_as_i64(v: Option<&serde_json::Value>) -> Option<i64> {
     match v {
         Some(serde_json::Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Some(serde_json::Value::String(s)) => s
+            .trim()
+            .parse::<i64>()
+            .ok()
+            .or_else(|| s.trim().parse::<f64>().ok().map(|f| f as i64)),
         _ => None,
     }
 }
@@ -1725,13 +1739,59 @@ fn value_as_i64(v: Option<&serde_json::Value>) -> Option<i64> {
 fn value_as_u64(v: Option<&serde_json::Value>) -> Option<u64> {
     match v {
         Some(serde_json::Value::Number(n)) => n.as_u64().or_else(|| n.as_f64().map(|f| f as u64)),
+        Some(serde_json::Value::String(s)) => s
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .or_else(|| s.trim().parse::<f64>().ok().map(|f| f as u64)),
         _ => None,
     }
 }
 
-fn reset_to_iso(ts: Option<i64>) -> Option<String> {
-    let ts = ts?;
-    DateTime::<Utc>::from_timestamp(ts, 0).map(|dt| dt.to_rfc3339())
+fn value_as_string(v: Option<&serde_json::Value>) -> Option<String> {
+    match v {
+        Some(serde_json::Value::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        _ => None,
+    }
+}
+
+fn epoch_to_iso(epoch: f64) -> Option<String> {
+    let seconds = if epoch.abs() >= 1_000_000_000_000.0 {
+        epoch / 1000.0
+    } else {
+        epoch
+    };
+    let whole_seconds = seconds.trunc() as i64;
+    let nanos = ((seconds - whole_seconds as f64).abs() * 1_000_000_000.0).round() as u32;
+    DateTime::<Utc>::from_timestamp(whole_seconds, nanos.min(999_999_999))
+        .map(|dt| dt.to_rfc3339())
+}
+
+fn reset_value_to_iso(v: Option<&serde_json::Value>) -> Option<String> {
+    let value = v?;
+    match value {
+        serde_json::Value::Number(n) => n.as_f64().and_then(epoch_to_iso),
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if let Ok(epoch) = trimmed.parse::<f64>() {
+                return epoch_to_iso(epoch);
+            }
+            chrono::DateTime::parse_from_rfc3339(trimmed)
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc).to_rfc3339())
+        }
+        _ => None,
+    }
 }
 
 fn parse_latest_codex_usage() -> Result<CodexUsageResult, AppError> {
@@ -1741,7 +1801,16 @@ fn parse_latest_codex_usage() -> Result<CodexUsageResult, AppError> {
     let f = fs::File::open(&file).map_err(|e| AppError::ConfigError(e.to_string()))?;
     let reader = io::BufReader::new(f);
 
-    let mut last_payload: Option<serde_json::Value> = None;
+    #[derive(Clone)]
+    struct CodexPayloadCandidate {
+        payload: serde_json::Value,
+        primary_used_percent: Option<f64>,
+    }
+
+    let mut latest_any: Option<CodexPayloadCandidate> = None;
+    let mut latest_non_zero: Option<CodexPayloadCandidate> = None;
+    let mut latest_codex: Option<CodexPayloadCandidate> = None;
+
     for line in reader.lines() {
         let line = line.map_err(|e| AppError::ConfigError(e.to_string()))?;
         if line.trim().is_empty() {
@@ -1751,32 +1820,100 @@ fn parse_latest_codex_usage() -> Result<CodexUsageResult, AppError> {
             Ok(val) => val,
             Err(_) => continue,
         };
-        let payload = v.get("payload");
-        let payload_type = payload.and_then(|p| p.get("type")).and_then(|t| t.as_str());
-        if payload_type == Some("token_count") {
-            last_payload = payload.cloned();
+        let payload = match v.get("payload") {
+            Some(p) => p,
+            None => continue,
+        };
+        let payload_type = payload.get("type").and_then(|t| t.as_str());
+        if payload_type != Some("token_count") {
+            continue;
+        }
+
+        let rate_limits = payload
+            .get("rate_limits")
+            .or_else(|| payload.get("rateLimits"));
+
+        let primary = rate_limits.and_then(|r| {
+            r.get("primary")
+                .or_else(|| r.get("windows").and_then(|w| w.get("primary")))
+        });
+        if primary.is_none() {
+            continue;
+        }
+
+        let primary_used_percent = value_as_f64(
+            primary.and_then(|p| p.get("used_percent").or_else(|| p.get("usedPercent"))),
+        );
+        let limit_id = value_as_string(
+            rate_limits.and_then(|r| r.get("limit_id").or_else(|| r.get("limitId"))),
+        )
+        .map(|s| s.to_ascii_lowercase());
+
+        let candidate = CodexPayloadCandidate {
+            payload: payload.clone(),
+            primary_used_percent,
+        };
+
+        latest_any = Some(candidate.clone());
+        if matches!(primary_used_percent, Some(v) if v > 0.0) {
+            latest_non_zero = Some(candidate.clone());
+        }
+        if limit_id.as_deref() == Some("codex") {
+            latest_codex = Some(candidate);
         }
     }
 
-    let payload = last_payload.ok_or_else(|| AppError::ConfigError("No token_count event found".to_string()))?;
-    let rate_limits = payload.get("rate_limits");
+    let selected = latest_codex
+        .or(latest_non_zero)
+        .or(latest_any)
+        .ok_or_else(|| AppError::ConfigError("No token_count event found".to_string()))?;
+
+    let payload = selected.payload;
+    let rate_limits = payload
+        .get("rate_limits")
+        .or_else(|| payload.get("rateLimits"));
     let info = payload.get("info");
 
-    let primary = rate_limits.and_then(|r| r.get("primary"));
-    let secondary = rate_limits.and_then(|r| r.get("secondary"));
+    let primary = rate_limits.and_then(|r| {
+        r.get("primary")
+            .or_else(|| r.get("windows").and_then(|w| w.get("primary")))
+    });
+    let secondary = rate_limits.and_then(|r| {
+        r.get("secondary")
+            .or_else(|| r.get("windows").and_then(|w| w.get("secondary")))
+    });
 
-    let primary_used_percent = value_as_f64(primary.and_then(|p| p.get("used_percent")));
-    let primary_window_minutes = value_as_i64(primary.and_then(|p| p.get("window_minutes")));
-    let primary_reset = reset_to_iso(value_as_i64(primary.and_then(|p| p.get("resets_at"))));
+    let primary_used_percent = value_as_f64(
+        primary.and_then(|p| p.get("used_percent").or_else(|| p.get("usedPercent"))),
+    )
+    .or(selected.primary_used_percent);
+    let primary_window_minutes = value_as_i64(
+        primary.and_then(|p| p.get("window_minutes").or_else(|| p.get("windowMinutes"))),
+    );
+    let primary_reset = reset_value_to_iso(
+        primary.and_then(|p| p.get("resets_at").or_else(|| p.get("resetsAt"))),
+    );
 
-    let secondary_used_percent = value_as_f64(secondary.and_then(|p| p.get("used_percent")));
-    let secondary_window_minutes = value_as_i64(secondary.and_then(|p| p.get("window_minutes")));
-    let secondary_reset = reset_to_iso(value_as_i64(secondary.and_then(|p| p.get("resets_at"))));
+    let secondary_used_percent = value_as_f64(
+        secondary.and_then(|p| p.get("used_percent").or_else(|| p.get("usedPercent"))),
+    );
+    let secondary_window_minutes = value_as_i64(
+        secondary.and_then(|p| p.get("window_minutes").or_else(|| p.get("windowMinutes"))),
+    );
+    let secondary_reset = reset_value_to_iso(
+        secondary.and_then(|p| p.get("resets_at").or_else(|| p.get("resetsAt"))),
+    );
 
     let plan_type = rate_limits
-        .and_then(|r| r.get("plan_type"))
+        .and_then(|r| r.get("plan_type").or_else(|| r.get("planType")))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let limit_id = value_as_string(
+        rate_limits.and_then(|r| r.get("limit_id").or_else(|| r.get("limitId"))),
+    );
+    let limit_name = value_as_string(
+        rate_limits.and_then(|r| r.get("limit_name").or_else(|| r.get("limitName"))),
+    );
 
     let total_tokens = value_as_u64(info.and_then(|i| i.get("total_token_usage")).and_then(|t| t.get("total_tokens")));
     let last_total_tokens = value_as_u64(info.and_then(|i| i.get("last_token_usage")).and_then(|t| t.get("total_tokens")));
@@ -1790,6 +1927,8 @@ fn parse_latest_codex_usage() -> Result<CodexUsageResult, AppError> {
         secondary_used_percent,
         secondary_window_minutes,
         secondary_reset,
+        limit_id,
+        limit_name,
         plan_type,
         total_tokens,
         last_total_tokens,
@@ -1809,6 +1948,8 @@ fn get_codex_usage() -> CodexUsageResult {
             secondary_used_percent: None,
             secondary_window_minutes: None,
             secondary_reset: None,
+            limit_id: None,
+            limit_name: None,
             plan_type: None,
             total_tokens: None,
             last_total_tokens: None,
