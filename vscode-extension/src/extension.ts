@@ -58,6 +58,10 @@ let output: vscode.OutputChannel
 let refreshTimer: NodeJS.Timeout | null = null
 let extensionVersion = 'dev'
 
+// Cache last known good snapshots so API errors don't reset the display to 0%
+let lastClaudeSnapshot: ProviderSnapshot | null = null
+let lastCodexSnapshot: ProviderSnapshot | null = null
+
 function log(line: string): void {
   const now = new Date().toISOString()
   output.appendLine(`[${now}] ${line}`)
@@ -647,6 +651,36 @@ function getConfig() {
   }
 }
 
+/**
+ * When fresh data has a valid usedPercent, update the cache and return fresh data.
+ * When fresh data has an error (usedPercent === null) but we have cached good data,
+ * return the cached data with the error attached so the display stays stable.
+ */
+function resolveWithCache(
+  fresh: ProviderSnapshot | null,
+  cached: ProviderSnapshot | null
+): { resolved: ProviderSnapshot | null; cache: ProviderSnapshot | null } {
+  if (!fresh) return { resolved: null, cache: cached }
+
+  // Fresh data is valid → update cache
+  if (fresh.usedPercent !== null) {
+    return { resolved: fresh, cache: fresh }
+  }
+
+  // Fresh data has an error → fall back to cache if available
+  if (cached && cached.usedPercent !== null) {
+    const stale: ProviderSnapshot = {
+      ...cached,
+      error: fresh.error ? `${fresh.error} · showing last known value` : 'showing last known value'
+    }
+    log(`${fresh.label}: API error, using cached value (${cached.usedPercent}% used)`)
+    return { resolved: stale, cache: cached }
+  }
+
+  // No cache either → pass through the error as-is
+  return { resolved: fresh, cache: cached }
+}
+
 
 async function refreshStatusBar(userTriggered = false): Promise<void> {
   const cfg = getConfig()
@@ -654,10 +688,18 @@ async function refreshStatusBar(userTriggered = false): Promise<void> {
   brandStatusBarItem.tooltip = 'Refreshing usage...'
   brandStatusBarItem.show()
 
-  const [claude, codex] = await Promise.all([
+  const [claudeRaw, codexRaw] = await Promise.all([
     cfg.showClaude ? readClaudeUsage() : Promise.resolve<ProviderSnapshot | null>(null),
     cfg.showCodex ? readCodexUsage() : Promise.resolve<ProviderSnapshot | null>(null)
   ])
+
+  // Resolve against cache: on API error, keep last known values instead of showing 0%
+  const claudeResolved = resolveWithCache(claudeRaw, lastClaudeSnapshot)
+  const codexResolved = resolveWithCache(codexRaw, lastCodexSnapshot)
+  lastClaudeSnapshot = claudeResolved.cache
+  lastCodexSnapshot = codexResolved.cache
+  const claude = claudeResolved.resolved
+  const codex = codexResolved.resolved
 
   const snapshots = [claude, codex].filter((s): s is ProviderSnapshot => s !== null)
   const successfulCount = snapshots.filter((s) => s.usedPercent !== null).length
