@@ -20,6 +20,10 @@ VS Code displays MeterAI in a compact, text-based status bar format:
 
 ![MeterAI VS Code - Status Bar](https://raw.githubusercontent.com/PopeYeahWine/MeterAI/main/vscode-extension/media/screenshot-vscode-statusbar.png)
 
+When credits are running low, the battery turns red so you can see at a glance:
+
+![MeterAI VS Code - Low Credits Warning](https://raw.githubusercontent.com/PopeYeahWine/MeterAI/main/vscode-extension/media/screenshot-vscode-low-credits.png)
+
 ### MeterAI Desktop (full visual UI)
 
 For a richer interface with a full visual dashboard, use the desktop application:
