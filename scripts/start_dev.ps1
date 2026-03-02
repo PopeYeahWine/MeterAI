@@ -2,7 +2,7 @@
 param(
     [Parameter()]
     [ValidateRange(1, 65535)]
-    [int]$Port = 8000,
+    [int]$Port = 4000,
 
     [Parameter()]
     [switch]$NoDockerAutoStart,
@@ -217,7 +217,8 @@ function Get-CombinedSha256 {
 
 function Test-DockerDaemonReady {
     docker info *> $null
-    return $LASTEXITCODE -eq 0
+    $code = if ($null -eq $LASTEXITCODE) { 1 } else { $LASTEXITCODE }
+    return $code -eq 0
 }
 
 function Wait-ForDockerDaemon {
@@ -400,7 +401,9 @@ function Get-GitDirtyChoice {
         Write-Host "  [C] Continue without pull"
         Write-Host "  [S] Stash + pull --ff-only + stash pop"
         Write-Host "  [A] Abort"
-        $choice = (Read-Host "Your choice").Trim().ToUpperInvariant()
+        $raw = Read-Host "Your choice"
+        if ([string]::IsNullOrWhiteSpace($raw)) { return "CONTINUE" }
+        $choice = $raw.Trim().ToUpperInvariant()
         switch ($choice) {
             "C" { return "CONTINUE" }
             "S" { return "STASH_PULL" }
@@ -411,6 +414,10 @@ function Get-GitDirtyChoice {
 }
 
 function Main {
+    # Initialise $LASTEXITCODE so strict mode doesn't throw before the first
+    # external command has had a chance to set it.
+    $global:LASTEXITCODE = 0
+
     Resolve-TemplateConfig
 
     Write-Banner -AppName $Script:Config.AppName
