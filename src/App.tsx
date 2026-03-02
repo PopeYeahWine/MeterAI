@@ -86,12 +86,45 @@ interface ClaudeCodeUsageResult {
   subscription_type: string | null // "pro", "max", etc.
 }
 
-// Cache for Claude usage when VS Code stops refreshing
-interface ClaudeUsageCache {
-  lastKnownUsage: ClaudeCodeUsageResult
+// Generic cache for any provider usage result (Claude, Codex, etc.)
+interface ProviderUsageCache<T extends { success: boolean }> {
+  lastKnownUsage: T
   lastKnownAt: number // timestamp when data was received
   isStale: boolean // true if data might be outdated
 }
+
+// When fresh data is valid, update cache. When error, fall back to cache.
+// Centralised so every provider benefits from the same resilience logic.
+function resolveProviderCache<T extends { success: boolean; error?: string | null }>(
+  fresh: T,
+  cache: ProviderUsageCache<T> | null,
+  providerName: string
+): { resolved: T; cache: ProviderUsageCache<T> | null } {
+  if (fresh.success) {
+    const newCache: ProviderUsageCache<T> = {
+      lastKnownUsage: fresh,
+      lastKnownAt: Date.now(),
+      isStale: false
+    }
+    return { resolved: fresh, cache: newCache }
+  }
+
+  // Error → fall back to cached value if available
+  if (cache && cache.lastKnownUsage.success) {
+    const ageMinutes = Math.round((Date.now() - cache.lastKnownAt) / 60000)
+    console.log(`MeterAI: ${providerName} fetch error, using cached value from ${ageMinutes} min ago`)
+    return {
+      resolved: cache.lastKnownUsage,
+      cache: { ...cache, isStale: true }
+    }
+  }
+
+  // No cache either → pass through the error as-is
+  return { resolved: fresh, cache }
+}
+
+// Backward-compatible alias used in render logic
+type ClaudeUsageCache = ProviderUsageCache<ClaudeCodeUsageResult>
 
 interface OpenAIUsageResult {
   success: boolean
@@ -1419,6 +1452,17 @@ function App() {
   const [openaiUsage, setOpenaiUsage] = useState<OpenAIUsageResult | null>(null)
   const [hasOpenaiApiKey, setHasOpenaiApiKey] = useState(false)
   const [codexUsage, setCodexUsage] = useState<CodexUsageResult | null>(null)
+  const [codexUsageCache, setCodexUsageCache] = useState<ProviderUsageCache<CodexUsageResult> | null>(() => {
+    try {
+      const cached = localStorage.getItem('codexUsageCache')
+      if (cached) {
+        const parsed = JSON.parse(cached) as ProviderUsageCache<CodexUsageResult>
+        const ageMs = Date.now() - parsed.lastKnownAt
+        return { ...parsed, isStale: ageMs > 5 * 60 * 1000 }
+      }
+    } catch { /* ignore */ }
+    return null
+  })
   const [hasCodexToken, setHasCodexToken] = useState(false)
   const [showClaudeDetectedPopup, setShowClaudeDetectedPopup] = useState(false)
   const [claudeDetectedDismissed, setClaudeDetectedDismissed] = useState(false)
@@ -1592,31 +1636,20 @@ function App() {
           const hasToken = await invoke<boolean>('has_claude_code_token')
           setHasClaudeCodeToken(hasToken)
 
-          // If token available, fetch Claude Code usage
           if (hasToken) {
             const ccUsage = await invoke<ClaudeCodeUsageResult>('get_claude_code_usage')
+            const { resolved, cache: newCache } = resolveProviderCache(ccUsage, claudeUsageCache, 'Claude')
+            setClaudeCodeUsage(resolved)
+            setClaudeUsageCache(newCache)
+            if (newCache) localStorage.setItem('claudeUsageCache', JSON.stringify(newCache))
 
-            // Check if we got valid data or if VS Code is stuck on "loading usage data"
-            const hasValidData = ccUsage.success && ccUsage.five_hour_percent !== null
-
-            if (hasValidData) {
-              // Valid data received - update state and cache
-              setClaudeCodeUsage(ccUsage)
-              const newCache: ClaudeUsageCache = {
-                lastKnownUsage: ccUsage,
-                lastKnownAt: Date.now(),
-                isStale: false
-              }
-              setClaudeUsageCache(newCache)
-              localStorage.setItem('claudeUsageCache', JSON.stringify(newCache))
-              console.log('MeterAI: Claude usage updated and cached:', ccUsage.five_hour_percent + '%')
-
+            if (resolved.success && resolved.five_hour_percent !== null) {
               setProvidersUsage(prev => ({
                 ...prev,
                 'claude-pro-max': {
-                  used: Math.round(ccUsage.five_hour_percent || 0),
+                  used: Math.round(resolved.five_hour_percent || 0),
                   limit: 100,
-                  percent: Math.round(ccUsage.five_hour_percent || 0)
+                  percent: Math.round(resolved.five_hour_percent || 0)
                 }
               }))
 
@@ -1625,36 +1658,6 @@ function App() {
               const claudeAlreadyEnabled = enabledProviders['claude-pro-max']
               if (!storedDismissed && !claudeAlreadyEnabled) {
                 setShowClaudeDetectedPopup(true)
-              }
-            } else {
-              // No valid data (VS Code stuck on "loading usage data" or error)
-              // Use cached data if available, mark as stale
-              console.log('MeterAI: No valid Claude data received, using cache if available')
-              const cached = localStorage.getItem('claudeUsageCache')
-              if (cached) {
-                try {
-                  const parsedCache = JSON.parse(cached) as ClaudeUsageCache
-                  const ageMs = Date.now() - parsedCache.lastKnownAt
-                  const ageMinutes = Math.round(ageMs / 60000)
-                  console.log(`MeterAI: Using cached data from ${ageMinutes} minutes ago`)
-
-                  // Mark as stale and use cached data
-                  parsedCache.isStale = true
-                  setClaudeUsageCache(parsedCache)
-                  setClaudeCodeUsage(parsedCache.lastKnownUsage)
-
-                  // Update providers with cached data (NOT 100%!)
-                  if (parsedCache.lastKnownUsage.five_hour_percent !== null) {
-                    setProvidersUsage(prev => ({
-                      ...prev,
-                      'claude-pro-max': {
-                        used: Math.round(parsedCache.lastKnownUsage.five_hour_percent || 0),
-                        limit: 100,
-                        percent: Math.round(parsedCache.lastKnownUsage.five_hour_percent || 0)
-                      }
-                    }))
-                  }
-                } catch { /* ignore parse error */ }
               }
             }
           }
@@ -1676,10 +1679,13 @@ function App() {
           setHasCodexToken(hasToken)
 
           if (hasToken) {
-            const codex = await invoke<CodexUsageResult>('get_codex_usage')
+            const codexRaw = await invoke<CodexUsageResult>('get_codex_usage')
+            const { resolved: codex, cache: newCodexCache } = resolveProviderCache(codexRaw, codexUsageCache, 'Codex')
             setCodexUsage(codex)
+            setCodexUsageCache(newCodexCache)
+            if (newCodexCache) localStorage.setItem('codexUsageCache', JSON.stringify(newCodexCache))
 
-            if (codex.success) {
+            if (codex.success && codex.primary_used_percent !== null) {
               const percent = getEffectiveUsedPercent(codex.primary_used_percent, codex.primary_reset)
               setProvidersUsage(prev => ({
                 ...prev,
@@ -1805,32 +1811,15 @@ function App() {
 
       console.log('MeterAI: Refreshing Claude Code usage...')
       const ccUsage = await invoke<ClaudeCodeUsageResult>('get_claude_code_usage')
+      const { resolved, cache: newCache } = resolveProviderCache(ccUsage, claudeUsageCache, 'Claude')
 
-      // Check if we got valid data
-      const hasValidData = ccUsage.success && ccUsage.five_hour_percent !== null
+      setClaudeCodeUsage(resolved)
+      setClaudeUsageCache(newCache)
+      if (newCache) localStorage.setItem('claudeUsageCache', JSON.stringify(newCache))
 
-      if (hasValidData) {
-        // Valid data - update state and cache
-        setClaudeCodeUsage(prev => {
-          if (!prev || prev.five_hour_percent !== ccUsage.five_hour_percent ||
-              prev.five_hour_reset !== ccUsage.five_hour_reset ||
-              prev.seven_day_percent !== ccUsage.seven_day_percent) {
-            return ccUsage
-          }
-          return prev
-        })
-
-        // Update cache
-        const newCache: ClaudeUsageCache = {
-          lastKnownUsage: ccUsage,
-          lastKnownAt: Date.now(),
-          isStale: false
-        }
-        setClaudeUsageCache(newCache)
-        localStorage.setItem('claudeUsageCache', JSON.stringify(newCache))
-
-        const percent = ccUsage.five_hour_percent ?? 0
-        console.log(`MeterAI: Usage updated - 5h: ${percent}%, reset: ${ccUsage.five_hour_reset}`)
+      if (resolved.success && resolved.five_hour_percent !== null) {
+        const percent = resolved.five_hour_percent ?? 0
+        console.log(`MeterAI: Usage updated - 5h: ${percent}%, reset: ${resolved.five_hour_reset}`)
         setProvidersUsage(prev => {
           const current = prev['claude-pro-max']
           const newPercent = Math.round(percent)
@@ -1846,41 +1835,12 @@ function App() {
           }
           return prev
         })
-      } else {
-        // No valid data - VS Code might be stuck on "loading usage data"
-        // Use cached data and mark as stale, but DON'T reset to 100%
-        console.log('MeterAI: No valid data received - VS Code might be paused or stuck')
-
-        setClaudeUsageCache(prev => {
-          if (prev) {
-            const ageMs = Date.now() - prev.lastKnownAt
-            const ageMinutes = Math.round(ageMs / 60000)
-            console.log(`MeterAI: Using cached data from ${ageMinutes} min ago (marking stale)`)
-
-            // If we have cached reset time, check if it has passed
-            if (prev.lastKnownUsage.five_hour_reset) {
-              const resetTime = new Date(prev.lastKnownUsage.five_hour_reset).getTime()
-              const now = Date.now()
-              if (now > resetTime) {
-                console.log('MeterAI: Cached reset time has passed - usage might have reset')
-                // Don't assume 100% available, just mark as very stale
-              }
-            }
-
-            return { ...prev, isStale: true }
-          }
-          return prev
-        })
-
-        // Keep using the last known usage, don't change to 100%
-        // The UI will show "stale" indicator based on claudeUsageCache.isStale
       }
     } catch (e) {
       console.log('MeterAI: Failed to refresh usage:', e)
-      // On error, mark cache as stale but keep using it
       setClaudeUsageCache(prev => prev ? { ...prev, isStale: true } : prev)
     }
-  }, [enabledProviders, configStatus.detected])
+  }, [enabledProviders, configStatus.detected, claudeUsageCache])
 
   // Auto-refresh Claude Code usage every 2 minutes
   useEffect(() => {
@@ -1919,14 +1879,15 @@ function App() {
       }
 
       console.log('MeterAI: Refreshing Codex usage...')
-      const result = await invoke<CodexUsageResult>('get_codex_usage')
+      const codexRaw = await invoke<CodexUsageResult>('get_codex_usage')
+      const { resolved, cache: newCache } = resolveProviderCache(codexRaw, codexUsageCache, 'Codex')
 
-      // Always update state so the render re-evaluates getEffectiveUsedPercent()
-      // with the current time (detects expired reset windows even when raw data is unchanged)
-      setCodexUsage(result)
+      setCodexUsage(resolved)
+      setCodexUsageCache(newCache)
+      if (newCache) localStorage.setItem('codexUsageCache', JSON.stringify(newCache))
 
-      if (result.success) {
-        const percent = getEffectiveUsedPercent(result.primary_used_percent, result.primary_reset)
+      if (resolved.success && resolved.primary_used_percent !== null) {
+        const percent = getEffectiveUsedPercent(resolved.primary_used_percent, resolved.primary_reset)
         setProvidersUsage(prev => {
           const current = prev['openai-codex']
           if (!current || current.percent !== percent) {
@@ -1941,13 +1902,12 @@ function App() {
           }
           return prev
         })
-      } else {
-        console.log('MeterAI: Codex usage fetch returned success=false:', result.error)
       }
     } catch (e) {
       console.log('MeterAI: Failed to refresh Codex usage:', e)
+      setCodexUsageCache(prev => prev ? { ...prev, isStale: true } : prev)
     }
-  }, [enabledProviders])
+  }, [enabledProviders, codexUsageCache])
 
   // Auto-refresh Codex usage every 60 seconds
   useEffect(() => {
