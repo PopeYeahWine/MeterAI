@@ -115,12 +115,12 @@ code --install-extension hpsc-sas.meterai-vscode
 
 | Platform | File | Download |
 |----------|------|----------|
-| Windows | `MeterAI_1.3.2_x64-setup.exe` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.3.2_x64-setup.exe) |
+| Windows | `MeterAI_1.4.0_x64-setup.exe` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.4.0_x64-setup.exe) |
 | Windows | `MeterAI_1.3.0_x64_en-US.msi` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.3.0_x64_en-US.msi) |
-| macOS (Intel) | `MeterAI_1.3.2_x64.dmg` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.3.2_x64.dmg) |
+| macOS (Intel) | `MeterAI_1.4.0_x64.dmg` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.4.0_x64.dmg) |
 | macOS (Apple Silicon) | `MeterAI_1.3.0_aarch64.dmg` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.3.0_aarch64.dmg) |
-| Linux | `MeterAI_1.3.2_amd64.AppImage` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.3.2_amd64.AppImage) |
-| Linux | `MeterAI_1.3.2_amd64.deb` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.3.2_amd64.deb) |
+| Linux | `MeterAI_1.4.0_amd64.AppImage` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.4.0_amd64.AppImage) |
+| Linux | `MeterAI_1.4.0_amd64.deb` | [Download](https://github.com/PopeYeahWine/MeterAI/releases/download/v1.3.0/MeterAI_1.4.0_amd64.deb) |
 
 > You may see a Windows SmartScreen warning when running the installer. This is normal for applications pending code signing approval. See [Code Signing Policy](#code-signing-policy) below.
 
