@@ -7,6 +7,7 @@ import { shell } from '@tauri-apps/api'
 import { fetch } from '@tauri-apps/api/http'
 import { platform } from '@tauri-apps/api/os'
 import { AI_PROVIDERS, CATEGORY_INFO, TRACKING_STATUS_INFO, type ProviderCategory, type ProviderDefinition, type TrackingStatus } from './providers'
+import { resolveProviderCache, type ProviderUsageCache } from './providerCache'
 
 // Crypto logos
 import btcLogo from './assets/crypto/btc.png'
@@ -84,43 +85,6 @@ interface ClaudeCodeUsageResult {
   seven_day_percent: number | null
   seven_day_reset: string | null
   subscription_type: string | null // "pro", "max", etc.
-}
-
-// Generic cache for any provider usage result (Claude, Codex, etc.)
-interface ProviderUsageCache<T extends { success: boolean }> {
-  lastKnownUsage: T
-  lastKnownAt: number // timestamp when data was received
-  isStale: boolean // true if data might be outdated
-}
-
-// When fresh data is valid, update cache. When error, fall back to cache.
-// Centralised so every provider benefits from the same resilience logic.
-function resolveProviderCache<T extends { success: boolean; error?: string | null }>(
-  fresh: T,
-  cache: ProviderUsageCache<T> | null,
-  providerName: string
-): { resolved: T; cache: ProviderUsageCache<T> | null } {
-  if (fresh.success) {
-    const newCache: ProviderUsageCache<T> = {
-      lastKnownUsage: fresh,
-      lastKnownAt: Date.now(),
-      isStale: false
-    }
-    return { resolved: fresh, cache: newCache }
-  }
-
-  // Error → fall back to cached value if available
-  if (cache && cache.lastKnownUsage.success) {
-    const ageMinutes = Math.round((Date.now() - cache.lastKnownAt) / 60000)
-    console.log(`MeterAI: ${providerName} fetch error, using cached value from ${ageMinutes} min ago`)
-    return {
-      resolved: cache.lastKnownUsage,
-      cache: { ...cache, isStale: true }
-    }
-  }
-
-  // No cache either → pass through the error as-is
-  return { resolved: fresh, cache }
 }
 
 // Backward-compatible alias used in render logic
@@ -1448,8 +1412,30 @@ function App() {
   })
   const [hasClaudeCodeToken, setHasClaudeCodeToken] = useState(false)
   const [claudeApiUsage, setClaudeApiUsage] = useState<ClaudeApiUsageResult | null>(null)
+  const [claudeApiUsageCache, setClaudeApiUsageCache] = useState<ProviderUsageCache<ClaudeApiUsageResult> | null>(() => {
+    try {
+      const cached = localStorage.getItem('claudeApiUsageCache')
+      if (cached) {
+        const parsed = JSON.parse(cached) as ProviderUsageCache<ClaudeApiUsageResult>
+        const ageMs = Date.now() - parsed.lastKnownAt
+        return { ...parsed, isStale: ageMs > 5 * 60 * 1000 }
+      }
+    } catch { /* ignore */ }
+    return null
+  })
   const [hasClaudeApiKey, setHasClaudeApiKey] = useState(false)
   const [openaiUsage, setOpenaiUsage] = useState<OpenAIUsageResult | null>(null)
+  const [openaiUsageCache, setOpenaiUsageCache] = useState<ProviderUsageCache<OpenAIUsageResult> | null>(() => {
+    try {
+      const cached = localStorage.getItem('openaiUsageCache')
+      if (cached) {
+        const parsed = JSON.parse(cached) as ProviderUsageCache<OpenAIUsageResult>
+        const ageMs = Date.now() - parsed.lastKnownAt
+        return { ...parsed, isStale: ageMs > 5 * 60 * 1000 }
+      }
+    } catch { /* ignore */ }
+    return null
+  })
   const [hasOpenaiApiKey, setHasOpenaiApiKey] = useState(false)
   const [codexUsage, setCodexUsage] = useState<CodexUsageResult | null>(null)
   const [codexUsageCache, setCodexUsageCache] = useState<ProviderUsageCache<CodexUsageResult> | null>(() => {
@@ -1940,20 +1926,15 @@ function App() {
       }
 
       console.log('MeterAI: Refreshing Claude API usage...')
-      const result = await invoke<ClaudeApiUsageResult>('get_claude_api_usage')
+      const raw = await invoke<ClaudeApiUsageResult>('get_claude_api_usage')
+      const { resolved, cache: newCache } = resolveProviderCache(raw, claudeApiUsageCache, 'Claude API')
 
-      setClaudeApiUsage(prev => {
-        if (!prev || prev.percent !== result.percent ||
-            prev.usage_usd !== result.usage_usd ||
-            prev.error !== result.error) {
-          return result
-        }
-        return prev
-      })
+      setClaudeApiUsage(resolved)
+      setClaudeApiUsageCache(newCache)
+      if (newCache) localStorage.setItem('claudeApiUsageCache', JSON.stringify(newCache))
 
-      if (result.success) {
-        const percent = result.percent ?? 0
-        const newPercent = Math.round(percent)
+      if (resolved.success && resolved.percent !== null) {
+        const newPercent = Math.round(resolved.percent)
         setProvidersUsage(prev => {
           const current = prev['claude-api']
           if (!current || current.percent !== newPercent) {
@@ -1968,13 +1949,12 @@ function App() {
           }
           return prev
         })
-      } else {
-        console.log('MeterAI: Claude API usage fetch returned success=false:', result.error)
       }
     } catch (e) {
       console.log('MeterAI: Failed to refresh Claude API usage:', e)
+      setClaudeApiUsageCache(prev => prev ? { ...prev, isStale: true } : prev)
     }
-  }, [enabledProviders])
+  }, [enabledProviders, claudeApiUsageCache])
 
   // Auto-refresh Claude API usage every 5 minutes
   useEffect(() => {
@@ -2008,19 +1988,16 @@ function App() {
       }
 
       console.log('MeterAI: Refreshing OpenAI API usage...')
-      const result = await invoke<OpenAIUsageResult>('get_openai_api_usage')
+      const raw = await invoke<OpenAIUsageResult>('get_openai_api_usage')
+      const { resolved, cache: newCache } = resolveProviderCache(raw, openaiUsageCache, 'OpenAI')
 
-      setOpenaiUsage(prev => {
-        if (!prev || prev.percent !== result.percent ||
-            prev.usage_usd !== result.usage_usd) {
-          return result
-        }
-        return prev
-      })
+      setOpenaiUsage(resolved)
+      setOpenaiUsageCache(newCache)
+      if (newCache) localStorage.setItem('openaiUsageCache', JSON.stringify(newCache))
 
-      if (result.success) {
-        const percent = result.percent ?? 0
-        console.log(`MeterAI: OpenAI usage updated - ${percent}% ($${result.usage_usd?.toFixed(2)} / $${result.limit_usd?.toFixed(2)})`)
+      if (resolved.success && resolved.percent !== null) {
+        const percent = resolved.percent
+        console.log(`MeterAI: OpenAI usage updated - ${percent}% ($${resolved.usage_usd?.toFixed(2)} / $${resolved.limit_usd?.toFixed(2)})`)
         setProvidersUsage(prev => {
           const current = prev['openai-api']
           const newPercent = Math.round(percent)
@@ -2036,13 +2013,12 @@ function App() {
           }
           return prev
         })
-      } else {
-        console.log('MeterAI: OpenAI usage fetch returned success=false:', result.error)
       }
     } catch (e) {
       console.log('MeterAI: Failed to refresh OpenAI usage:', e)
+      setOpenaiUsageCache(prev => prev ? { ...prev, isStale: true } : prev)
     }
-  }, [enabledProviders])
+  }, [enabledProviders, openaiUsageCache])
 
   // Auto-refresh OpenAI usage every 5 minutes
   useEffect(() => {
