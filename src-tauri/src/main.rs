@@ -12,7 +12,7 @@ use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, atomic::{AtomicI64, Ordering}};
 use tauri::{
     CustomMenuItem, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem,
     Window,
@@ -45,6 +45,35 @@ impl Serialize for AppError {
     {
         serializer.serialize_str(&self.to_string())
     }
+}
+
+// ============== RATE LIMIT BACKOFF ==============
+
+/// Global backoff-until timestamp (epoch millis) for the Claude OAuth usage endpoint.
+/// When the API returns 429, we store the time after which we may retry.
+static CLAUDE_USAGE_BACKOFF_UNTIL: AtomicI64 = AtomicI64::new(0);
+
+/// Check if we are currently in a rate-limit backoff period.
+fn is_claude_usage_rate_limited() -> bool {
+    let until = CLAUDE_USAGE_BACKOFF_UNTIL.load(Ordering::Relaxed);
+    if until == 0 {
+        return false;
+    }
+    let now_ms = Utc::now().timestamp_millis();
+    now_ms < until
+}
+
+/// Record a rate-limit backoff from a Retry-After value (seconds).
+fn set_claude_usage_backoff(retry_after_secs: i64) {
+    let now_ms = Utc::now().timestamp_millis();
+    // Add a small buffer (2s) to avoid hitting the edge
+    let until = now_ms + (retry_after_secs + 2) * 1000;
+    CLAUDE_USAGE_BACKOFF_UNTIL.store(until, Ordering::Relaxed);
+}
+
+/// Clear the backoff (called on success).
+fn clear_claude_usage_backoff() {
+    CLAUDE_USAGE_BACKOFF_UNTIL.store(0, Ordering::Relaxed);
 }
 
 // ============== PROVIDER TYPES ==============
@@ -547,17 +576,36 @@ fn get_detected_config_source(custom_path: Option<&str>) -> String {
 
 /// Fetch usage from Claude Code OAuth API
 async fn fetch_claude_code_usage(token: &str) -> Result<ClaudeUsageResponse, AppError> {
+    // Skip if we are in a rate-limit backoff window
+    if is_claude_usage_rate_limited() {
+        return Err(AppError::ApiError("Rate limited (backoff active, will retry later)".to_string()));
+    }
+
     let client = reqwest::Client::new();
 
     let response = client
         .get("https://api.anthropic.com/api/oauth/usage")
         .header("Authorization", format!("Bearer {}", token))
-        .header("anthropic-beta", "oauth-2025-04-20")
-        .header("User-Agent", "claude-code/2.0.32")
+        .header("User-Agent", "claude-code/2.1.0")
         .header("Content-Type", "application/json")
         .send()
         .await
         .map_err(|e| AppError::NetworkError(e.to_string()))?;
+
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        // Parse Retry-After header (value in seconds)
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(60); // default 60s if missing
+        set_claude_usage_backoff(retry_after);
+        return Err(AppError::ApiError(format!(
+            "Rate limited (retry after {}s)",
+            retry_after
+        )));
+    }
 
     if !response.status().is_success() {
         let status = response.status();
@@ -567,6 +615,9 @@ async fn fetch_claude_code_usage(token: &str) -> Result<ClaudeUsageResponse, App
             status, body
         )));
     }
+
+    // Success — clear any backoff
+    clear_claude_usage_backoff();
 
     let usage: ClaudeUsageResponse = response
         .json()

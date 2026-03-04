@@ -62,6 +62,9 @@ let extensionVersion = 'dev'
 let lastClaudeSnapshot: ProviderSnapshot | null = null
 let lastCodexSnapshot: ProviderSnapshot | null = null
 
+// Rate-limit backoff: timestamp (ms) until which we should not call the Claude usage API
+let claudeUsageBackoffUntil = 0
+
 function log(line: string): void {
   const now = new Date().toISOString()
   output.appendLine(`[${now}] ${line}`)
@@ -239,7 +242,7 @@ async function getClaudeCredentialInfo(): Promise<ClaudeCredentialInfo | null> {
   return null
 }
 
-function httpGet(url: string, headers: Record<string, string>): Promise<{ statusCode: number; body: string }> {
+function httpGet(url: string, headers: Record<string, string>): Promise<{ statusCode: number; body: string; headers: Record<string, string | string[] | undefined> }> {
   return new Promise((resolve, reject) => {
     const req = https.request(
       url,
@@ -252,7 +255,7 @@ function httpGet(url: string, headers: Record<string, string>): Promise<{ status
         res.on('data', (chunk) => chunks.push(Buffer.from(chunk)))
         res.on('end', () => {
           const body = Buffer.concat(chunks).toString('utf8')
-          resolve({ statusCode: res.statusCode ?? 0, body })
+          resolve({ statusCode: res.statusCode ?? 0, body, headers: res.headers })
         })
       }
     )
@@ -273,13 +276,42 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
     }
   }
 
+  // Skip API call if we are in a rate-limit backoff window
+  if (Date.now() < claudeUsageBackoffUntil) {
+    log('Claude usage: skipping fetch (rate-limit backoff active)')
+    return {
+      label: 'Claude',
+      usedPercent: null,
+      resetIso: null,
+      plan: formatClaudePlanName(credentialInfo.subscriptionType),
+      email: credentialInfo.email,
+      error: 'Rate limited (backoff active, will retry later)'
+    }
+  }
+
   try {
     const response = await httpGet('https://api.anthropic.com/api/oauth/usage', {
       Authorization: `Bearer ${credentialInfo.token}`,
-      'anthropic-beta': 'oauth-2025-04-20',
       'User-Agent': `meterai-vscode/${extensionVersion}`,
       'Content-Type': 'application/json'
     })
+
+    // Handle 429 rate limit: respect Retry-After header and back off
+    if (response.statusCode === 429) {
+      const retryAfterRaw = response.headers['retry-after']
+      const retryAfter = typeof retryAfterRaw === 'string' ? parseInt(retryAfterRaw, 10) : 60
+      const backoffSecs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 60
+      claudeUsageBackoffUntil = Date.now() + (backoffSecs + 2) * 1000
+      log(`Claude usage: rate limited, backing off for ${backoffSecs}s`)
+      return {
+        label: 'Claude',
+        usedPercent: null,
+        resetIso: null,
+        plan: formatClaudePlanName(credentialInfo.subscriptionType),
+        email: credentialInfo.email,
+        error: `Rate limited (retry after ${backoffSecs}s)`
+      }
+    }
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       return {
@@ -289,6 +321,9 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
         error: `API ${response.statusCode}`
       }
     }
+
+    // Success — clear backoff
+    claudeUsageBackoffUntil = 0
 
     const payload = JSON.parse(response.body) as ClaudeUsageResponse
     // If no active five-hour window yet, treat as 0% used and waiting state

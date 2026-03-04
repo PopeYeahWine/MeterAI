@@ -72,7 +72,6 @@ if (claudeToken) {
   try {
     const response = await httpGet('https://api.anthropic.com/api/oauth/usage', {
       Authorization: `Bearer ${claudeToken}`,
-      'anthropic-beta': 'oauth-2025-04-20',
       'User-Agent': 'meterai-test/1.0',
       'Content-Type': 'application/json'
     })
