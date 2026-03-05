@@ -1,26 +1,20 @@
-# Local Dev Bootstrap (Windows / VS Code)
+# MeterAI Dev Launcher (Windows / VS Code)
+
+## Purpose
+
+`scripts/start_dev.ps1` starts MeterAI in desktop development mode with Tauri:
+
+- validates prerequisites (Node.js, npm, Rust toolchain),
+- installs npm dependencies when needed,
+- launches `npm run tauri:dev`.
+
+No Django, Python virtualenv, migrations, or Docker are used.
 
 ## Prerequisites
 
 - PowerShell 7 (`pwsh`)
-- Git
-- Docker Desktop + Docker Compose v2 (`docker compose`)
-- Python + `venv`
 - Node.js + npm
-
-## Configure `scripts/start_dev.ps1`
-
-Edit the `$Script:Config` block and replace placeholder values:
-
-- `{{APP_NAME}}`
-- `{{PROJECT_ROOT}}` (optional, defaults to repo root)
-- `{{MANAGE_OR_ENTRYPOINT}}`
-- `{{DB_CONTAINER_NAME}}`
-- `{{RUN_COMMAND}}`
-- `{{SEED_COMMAND}}` (optional)
-- `{{DJANGO_SETTINGS_MODULE}}` (optional)
-
-Also adjust `DockerServices`, `RequirementFiles`, `UsefulUrls`, and `DevLogin` for your project.
+- Rust toolchain (`rustc`, `cargo`)
 
 ## Run manually
 
@@ -28,21 +22,21 @@ Also adjust `DockerServices`, `RequirementFiles`, `UsefulUrls`, and `DevLogin` f
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_dev.ps1
 ```
 
-Options:
+## Options
 
-- `-Port 8001`
-- `-NoDockerAutoStart`
-- `-DockerTimeout 240`
-- `-DbTimeout 90`
+- `-FrontendPort 1420`  
+  Port check for the Vite dev server (warning only if already used).
+- `-InstallDependencies`  
+  Force `npm install` even if `node_modules` already exists.
+- `-SkipLaunch`  
+  Validate setup without launching `tauri:dev`.
 
 ## VS Code auto-start
 
-The workspace task `Start Dev Bootstrap` is configured in `.vscode/tasks.json` with `runOn: "folderOpen"`.
-Automatic tasks are enabled via `.vscode/settings.json`.
+The workspace task `Start Dev Bootstrap` in `.vscode/tasks.json` runs this script on folder open.
 
 ## Troubleshooting
 
-- If the script exits on prerequisites, install missing tools and reopen the terminal.
-- If Docker does not become ready in time, launch Docker Desktop manually and rerun.
-- If backend port is busy, stop the reported PID or run with another `-Port`.
-- If migrations/seed fail, run the command manually inside the activated venv to inspect the error.
+- If prerequisites are missing, install the tool and rerun.
+- If Tauri starts but no window appears, check the system tray icon and rerun from the task terminal to inspect logs.
+- If port `1420` is already used, stop the conflicting process.

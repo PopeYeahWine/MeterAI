@@ -2759,6 +2759,26 @@ fn main() {
         .manage(Mutex::new(state))
         .system_tray(tray)
         .on_system_tray_event(handle_tray_event)
+        .setup(|_app_handle| {
+            #[cfg(debug_assertions)]
+            {
+                let should_show_window = env::var("METERAI_DEV_SHOW_WINDOW")
+                    .map(|value| {
+                        let normalized = value.trim().to_ascii_lowercase();
+                        normalized == "1" || normalized == "true" || normalized == "yes"
+                    })
+                    .unwrap_or(true);
+
+                if should_show_window {
+                    if let Some(window) = _app_handle.get_window("main") {
+                        window.show().ok();
+                        window.set_focus().ok();
+                    }
+                }
+            }
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_usage,
             get_all_providers,
