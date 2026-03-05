@@ -66,8 +66,10 @@ fn is_claude_usage_rate_limited() -> bool {
 /// Record a rate-limit backoff from a Retry-After value (seconds).
 fn set_claude_usage_backoff(retry_after_secs: i64) {
     let now_ms = Utc::now().timestamp_millis();
-    // Add a small buffer (2s) to avoid hitting the edge
-    let until = now_ms + (retry_after_secs + 2) * 1000;
+    // Minimum 5min backoff even if Retry-After is 0 (API may return 0 when
+    // the endpoint is aggressively rate-limited or soft-blocked).
+    let effective_secs = retry_after_secs.max(300);
+    let until = now_ms + (effective_secs + 2) * 1000;
     CLAUDE_USAGE_BACKOFF_UNTIL.store(until, Ordering::Relaxed);
 }
 
@@ -574,13 +576,66 @@ fn get_detected_config_source(custom_path: Option<&str>) -> String {
     "none".to_string()
 }
 
-/// Fetch usage from Claude Code OAuth API
+// ============== SHARED USAGE CACHE ==============
+// Both the Tauri app and VS Code extension share a disk cache so that only
+// ONE client hits the API per polling window, preventing rate-limit storms.
+
+/// On-disk cache format for `/api/oauth/usage` responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SharedUsageCache {
+    fetched_at: i64, // epoch milliseconds
+    five_hour: Option<ClaudeUsageWindow>,
+    seven_day: Option<ClaudeUsageWindow>,
+}
+
+/// Max age (ms) of the shared cache before a fresh API call is needed.
+const SHARED_CACHE_MAX_AGE_MS: i64 = 90_000; // 90 seconds
+
+fn shared_cache_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".claude")
+        .join("meterai-usage-cache.json")
+}
+
+fn read_shared_cache() -> Option<SharedUsageCache> {
+    let path = shared_cache_path();
+    let content = fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn write_shared_cache(usage: &ClaudeUsageResponse) {
+    let cache = SharedUsageCache {
+        fetched_at: Utc::now().timestamp_millis(),
+        five_hour: usage.five_hour.clone(),
+        seven_day: usage.seven_day.clone(),
+    };
+    if let Ok(json) = serde_json::to_string_pretty(&cache) {
+        let path = shared_cache_path();
+        fs::write(&path, json).ok();
+    }
+}
+
+/// Fetch usage from Claude Code OAuth API, using shared disk cache to
+/// coordinate with other MeterAI clients (VS Code extension, etc.).
 async fn fetch_claude_code_usage(token: &str) -> Result<ClaudeUsageResponse, AppError> {
-    // Skip if we are in a rate-limit backoff window
+    // 1. Check shared disk cache — if fresh, skip the API call entirely
+    if let Some(cache) = read_shared_cache() {
+        let age_ms = Utc::now().timestamp_millis() - cache.fetched_at;
+        if age_ms >= 0 && age_ms < SHARED_CACHE_MAX_AGE_MS {
+            return Ok(ClaudeUsageResponse {
+                five_hour: cache.five_hour,
+                seven_day: cache.seven_day,
+            });
+        }
+    }
+
+    // 2. Skip if we are in a rate-limit backoff window
     if is_claude_usage_rate_limited() {
         return Err(AppError::ApiError("Rate limited (backoff active, will retry later)".to_string()));
     }
 
+    // 3. Actually call the API
     let client = reqwest::Client::new();
 
     let response = client
@@ -593,13 +648,12 @@ async fn fetch_claude_code_usage(token: &str) -> Result<ClaudeUsageResponse, App
         .map_err(|e| AppError::NetworkError(e.to_string()))?;
 
     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        // Parse Retry-After header (value in seconds)
         let retry_after = response
             .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(60); // default 60s if missing
+            .unwrap_or(60);
         set_claude_usage_backoff(retry_after);
         return Err(AppError::ApiError(format!(
             "Rate limited (retry after {}s)",
@@ -616,13 +670,15 @@ async fn fetch_claude_code_usage(token: &str) -> Result<ClaudeUsageResponse, App
         )));
     }
 
-    // Success — clear any backoff
+    // Success — clear backoff and write shared cache
     clear_claude_usage_backoff();
 
     let usage: ClaudeUsageResponse = response
         .json()
         .await
         .map_err(|e| AppError::ApiError(format!("Failed to parse response: {}", e)))?;
+
+    write_shared_cache(&usage);
 
     Ok(usage)
 }

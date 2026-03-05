@@ -21,6 +21,7 @@ interface ClaudeUsageWindow {
 
 interface ClaudeUsageResponse {
   five_hour?: ClaudeUsageWindow
+  seven_day?: ClaudeUsageWindow
 }
 
 interface CodexUsageSnapshot {
@@ -64,6 +65,39 @@ let lastCodexSnapshot: ProviderSnapshot | null = null
 
 // Rate-limit backoff: timestamp (ms) until which we should not call the Claude usage API
 let claudeUsageBackoffUntil = 0
+
+// ── Shared disk cache ────────────────────────────────────────────────
+// Both the Tauri app and this extension write/read the same file so that
+// only ONE client actually hits the API per polling window.
+const SHARED_CACHE_MAX_AGE_MS = 90_000 // 90 seconds
+const SHARED_CACHE_PATH = path.join(os.homedir(), '.claude', 'meterai-usage-cache.json')
+
+interface SharedUsageCache {
+  fetched_at: number
+  five_hour?: { utilization?: number; resets_at?: string }
+  seven_day?: { utilization?: number; resets_at?: string }
+}
+
+async function readSharedCache(): Promise<SharedUsageCache | null> {
+  try {
+    const raw = await fs.readFile(SHARED_CACHE_PATH, 'utf8')
+    return JSON.parse(raw) as SharedUsageCache
+  } catch {
+    return null
+  }
+}
+
+async function writeSharedCache(payload: ClaudeUsageResponse): Promise<void> {
+  const cache: SharedUsageCache = {
+    fetched_at: Date.now(),
+    five_hour: payload.five_hour,
+    seven_day: payload.seven_day
+  }
+  try {
+    await fs.writeFile(SHARED_CACHE_PATH, JSON.stringify(cache, null, 2), 'utf8')
+  } catch { /* best effort */ }
+}
+// ─────────────────────────────────────────────────────────────────────
 
 function log(line: string): void {
   const now = new Date().toISOString()
@@ -276,7 +310,22 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
     }
   }
 
-  // Skip API call if we are in a rate-limit backoff window
+  // 1. Check shared disk cache — if another client fetched recently, reuse it
+  const cached = await readSharedCache()
+  if (cached && (Date.now() - cached.fetched_at) < SHARED_CACHE_MAX_AGE_MS) {
+    log('Claude usage: using shared cache (fresh)')
+    const used = typeof cached.five_hour?.utilization === 'number' ? cached.five_hour.utilization : 0
+    const resetIso = typeof cached.five_hour?.resets_at === 'string' ? cached.five_hour.resets_at : null
+    return {
+      label: 'Claude',
+      usedPercent: getEffectiveUsedPercent(used, resetIso),
+      resetIso,
+      plan: formatClaudePlanName(credentialInfo.subscriptionType),
+      email: credentialInfo.email
+    }
+  }
+
+  // 2. Skip API call if we are in a rate-limit backoff window
   if (Date.now() < claudeUsageBackoffUntil) {
     log('Claude usage: skipping fetch (rate-limit backoff active)')
     return {
@@ -289,6 +338,7 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
     }
   }
 
+  // 3. Actually call the API
   try {
     const response = await httpGet('https://api.anthropic.com/api/oauth/usage', {
       Authorization: `Bearer ${credentialInfo.token}`,
@@ -299,8 +349,9 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
     // Handle 429 rate limit: respect Retry-After header and back off
     if (response.statusCode === 429) {
       const retryAfterRaw = response.headers['retry-after']
-      const retryAfter = typeof retryAfterRaw === 'string' ? parseInt(retryAfterRaw, 10) : 60
-      const backoffSecs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 60
+      const retryAfter = typeof retryAfterRaw === 'string' ? parseInt(retryAfterRaw, 10) : 0
+      // Minimum 5min backoff even if Retry-After is 0 (API may return 0 when soft-blocked)
+      const backoffSecs = Math.max(Number.isFinite(retryAfter) ? retryAfter : 0, 300)
       claudeUsageBackoffUntil = Date.now() + (backoffSecs + 2) * 1000
       log(`Claude usage: rate limited, backing off for ${backoffSecs}s`)
       return {
@@ -322,11 +373,12 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
       }
     }
 
-    // Success — clear backoff
+    // Success — clear backoff and write shared cache
     claudeUsageBackoffUntil = 0
 
     const payload = JSON.parse(response.body) as ClaudeUsageResponse
-    // If no active five-hour window yet, treat as 0% used and waiting state
+    await writeSharedCache(payload)
+
     const used = typeof payload.five_hour?.utilization === 'number' ? payload.five_hour.utilization : 0
     const resetIso = typeof payload.five_hour?.resets_at === 'string' ? payload.five_hour.resets_at : null
 
