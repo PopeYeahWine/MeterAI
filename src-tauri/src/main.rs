@@ -9,10 +9,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
 use std::env;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{Mutex, atomic::{AtomicI64, Ordering}};
+use std::time::Duration;
 use tauri::{
     CustomMenuItem, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem,
     Window,
@@ -71,6 +72,10 @@ fn set_claude_usage_backoff(retry_after_secs: i64) {
     let effective_secs = retry_after_secs.max(300);
     let until = now_ms + (effective_secs + 2) * 1000;
     CLAUDE_USAGE_BACKOFF_UNTIL.store(until, Ordering::Relaxed);
+}
+
+fn set_claude_usage_backoff_until(until_ms: i64) {
+    CLAUDE_USAGE_BACKOFF_UNTIL.store(until_ms, Ordering::Relaxed);
 }
 
 /// Clear the backoff (called on success).
@@ -586,16 +591,47 @@ struct SharedUsageCache {
     fetched_at: i64, // epoch milliseconds
     five_hour: Option<ClaudeUsageWindow>,
     seven_day: Option<ClaudeUsageWindow>,
+    #[serde(default)]
+    backoff_until: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SharedFetchLock {
+    expires_at: i64,
+}
+
+struct SharedFetchLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for SharedFetchLockGuard {
+    fn drop(&mut self) {
+        fs::remove_file(&self.path).ok();
+    }
 }
 
 /// Max age (ms) of the shared cache before a fresh API call is needed.
 const SHARED_CACHE_MAX_AGE_MS: i64 = 90_000; // 90 seconds
+const SHARED_FETCH_LOCK_STALE_MS: i64 = 15_000;
+const SHARED_FETCH_WAIT_MS: i64 = 8_000;
+const SHARED_FETCH_POLL_MS: u64 = 250;
 
-fn shared_cache_path() -> PathBuf {
+fn shared_cache_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".claude")
-        .join("meterai-usage-cache.json")
+}
+
+fn shared_cache_path() -> PathBuf {
+    shared_cache_dir().join("meterai-usage-cache.json")
+}
+
+fn shared_fetch_lock_path() -> PathBuf {
+    shared_cache_dir().join("meterai-usage-cache.lock")
+}
+
+fn ensure_shared_cache_dir() {
+    fs::create_dir_all(shared_cache_dir()).ok();
 }
 
 fn read_shared_cache() -> Option<SharedUsageCache> {
@@ -604,15 +640,122 @@ fn read_shared_cache() -> Option<SharedUsageCache> {
     serde_json::from_str(&content).ok()
 }
 
-fn write_shared_cache(usage: &ClaudeUsageResponse) {
-    let cache = SharedUsageCache {
-        fetched_at: Utc::now().timestamp_millis(),
-        five_hour: usage.five_hour.clone(),
-        seven_day: usage.seven_day.clone(),
-    };
+fn shared_cache_to_usage(cache: &SharedUsageCache) -> ClaudeUsageResponse {
+    ClaudeUsageResponse {
+        five_hour: cache.five_hour.clone(),
+        seven_day: cache.seven_day.clone(),
+    }
+}
+
+fn is_shared_cache_fresh(cache: &SharedUsageCache) -> bool {
+    if cache.fetched_at <= 0 {
+        return false;
+    }
+    let age_ms = Utc::now().timestamp_millis() - cache.fetched_at;
+    age_ms >= 0 && age_ms < SHARED_CACHE_MAX_AGE_MS
+}
+
+fn get_shared_backoff_until(cache: &SharedUsageCache) -> Option<i64> {
+    let until = cache.backoff_until?;
+    let now_ms = Utc::now().timestamp_millis();
+    if until > now_ms {
+        Some(until)
+    } else {
+        None
+    }
+}
+
+fn write_shared_cache_state(cache: &SharedUsageCache) {
+    ensure_shared_cache_dir();
     if let Ok(json) = serde_json::to_string_pretty(&cache) {
         let path = shared_cache_path();
         fs::write(&path, json).ok();
+    }
+}
+
+fn write_shared_cache(usage: &ClaudeUsageResponse) {
+    write_shared_cache_state(&SharedUsageCache {
+        fetched_at: Utc::now().timestamp_millis(),
+        five_hour: usage.five_hour.clone(),
+        seven_day: usage.seven_day.clone(),
+        backoff_until: None,
+    });
+}
+
+fn write_shared_backoff(retry_after_secs: i64) {
+    let now_ms = Utc::now().timestamp_millis();
+    let effective_secs = retry_after_secs.max(300);
+    let until = now_ms + (effective_secs + 2) * 1000;
+    let mut cache = read_shared_cache().unwrap_or(SharedUsageCache {
+        fetched_at: 0,
+        five_hour: None,
+        seven_day: None,
+        backoff_until: None,
+    });
+    cache.backoff_until = Some(until);
+    write_shared_cache_state(&cache);
+}
+
+fn try_acquire_shared_fetch_lock() -> io::Result<Option<SharedFetchLockGuard>> {
+    ensure_shared_cache_dir();
+    let path = shared_fetch_lock_path();
+
+    loop {
+        let now_ms = Utc::now().timestamp_millis();
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                let lock = SharedFetchLock {
+                    expires_at: now_ms + SHARED_FETCH_LOCK_STALE_MS,
+                };
+                let json = serde_json::to_string(&lock)
+                    .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+                file.write_all(json.as_bytes())?;
+                return Ok(Some(SharedFetchLockGuard { path }));
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                let stale = fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|content| serde_json::from_str::<SharedFetchLock>(&content).ok())
+                    .map(|lock| lock.expires_at <= now_ms)
+                    .unwrap_or(true);
+
+                if stale {
+                    if fs::remove_file(&path).is_ok() {
+                        continue;
+                    }
+                }
+
+                return Ok(None);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+async fn wait_for_shared_fetch_result() -> Result<ClaudeUsageResponse, AppError> {
+    let deadline = Utc::now().timestamp_millis() + SHARED_FETCH_WAIT_MS;
+
+    loop {
+        if let Some(cache) = read_shared_cache() {
+            if is_shared_cache_fresh(&cache) {
+                return Ok(shared_cache_to_usage(&cache));
+            }
+
+            if let Some(until) = get_shared_backoff_until(&cache) {
+                set_claude_usage_backoff_until(until);
+                return Err(AppError::ApiError(
+                    "Rate limited (shared backoff active, will retry later)".to_string(),
+                ));
+            }
+        }
+
+        if Utc::now().timestamp_millis() >= deadline {
+            return Err(AppError::ApiError(
+                "Claude usage fetch already in progress in another MeterAI client".to_string(),
+            ));
+        }
+
+        tokio::time::sleep(Duration::from_millis(SHARED_FETCH_POLL_MS)).await;
     }
 }
 
@@ -621,12 +764,15 @@ fn write_shared_cache(usage: &ClaudeUsageResponse) {
 async fn fetch_claude_code_usage(token: &str) -> Result<ClaudeUsageResponse, AppError> {
     // 1. Check shared disk cache — if fresh, skip the API call entirely
     if let Some(cache) = read_shared_cache() {
-        let age_ms = Utc::now().timestamp_millis() - cache.fetched_at;
-        if age_ms >= 0 && age_ms < SHARED_CACHE_MAX_AGE_MS {
-            return Ok(ClaudeUsageResponse {
-                five_hour: cache.five_hour,
-                seven_day: cache.seven_day,
-            });
+        if is_shared_cache_fresh(&cache) {
+            return Ok(shared_cache_to_usage(&cache));
+        }
+
+        if let Some(until) = get_shared_backoff_until(&cache) {
+            set_claude_usage_backoff_until(until);
+            return Err(AppError::ApiError(
+                "Rate limited (shared backoff active, will retry later)".to_string(),
+            ));
         }
     }
 
@@ -635,7 +781,27 @@ async fn fetch_claude_code_usage(token: &str) -> Result<ClaudeUsageResponse, App
         return Err(AppError::ApiError("Rate limited (backoff active, will retry later)".to_string()));
     }
 
-    // 3. Actually call the API
+    // 3. Coordinate in-flight fetches across MeterAI processes
+    let _fetch_lock = match try_acquire_shared_fetch_lock() {
+        Ok(Some(lock)) => Some(lock),
+        Ok(None) => return wait_for_shared_fetch_result().await,
+        Err(_) => None,
+    };
+
+    if let Some(cache) = read_shared_cache() {
+        if is_shared_cache_fresh(&cache) {
+            return Ok(shared_cache_to_usage(&cache));
+        }
+
+        if let Some(until) = get_shared_backoff_until(&cache) {
+            set_claude_usage_backoff_until(until);
+            return Err(AppError::ApiError(
+                "Rate limited (shared backoff active, will retry later)".to_string(),
+            ));
+        }
+    }
+
+    // 4. Actually call the API
     let client = reqwest::Client::new();
 
     let response = client
@@ -655,6 +821,7 @@ async fn fetch_claude_code_usage(token: &str) -> Result<ClaudeUsageResponse, App
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(60);
         set_claude_usage_backoff(retry_after);
+        write_shared_backoff(retry_after);
         return Err(AppError::ApiError(format!(
             "Rate limited (retry after {}s)",
             retry_after

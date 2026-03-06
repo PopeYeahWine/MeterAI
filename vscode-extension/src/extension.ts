@@ -71,11 +71,16 @@ let claudeUsageBackoffUntil = 0
 // only ONE client actually hits the API per polling window.
 const SHARED_CACHE_MAX_AGE_MS = 90_000 // 90 seconds
 const SHARED_CACHE_PATH = path.join(os.homedir(), '.claude', 'meterai-usage-cache.json')
+const SHARED_FETCH_LOCK_PATH = path.join(os.homedir(), '.claude', 'meterai-usage-cache.lock')
+const SHARED_FETCH_LOCK_STALE_MS = 15_000
+const SHARED_FETCH_WAIT_MS = 8_000
+const SHARED_FETCH_POLL_MS = 250
 
 interface SharedUsageCache {
   fetched_at: number
   five_hour?: { utilization?: number; resets_at?: string }
   seven_day?: { utilization?: number; resets_at?: string }
+  backoff_until?: number
 }
 
 async function readSharedCache(): Promise<SharedUsageCache | null> {
@@ -87,15 +92,150 @@ async function readSharedCache(): Promise<SharedUsageCache | null> {
   }
 }
 
+function sharedCacheToSnapshot(cache: SharedUsageCache, credentialInfo: ClaudeCredentialInfo): ProviderSnapshot {
+  const used = typeof cache.five_hour?.utilization === 'number' ? cache.five_hour.utilization : 0
+  const resetIso = typeof cache.five_hour?.resets_at === 'string' ? cache.five_hour.resets_at : null
+  return {
+    label: 'Claude',
+    usedPercent: getEffectiveUsedPercent(used, resetIso),
+    resetIso,
+    plan: formatClaudePlanName(credentialInfo.subscriptionType),
+    email: credentialInfo.email
+  }
+}
+
+function isSharedCacheFresh(cache: SharedUsageCache): boolean {
+  return cache.fetched_at > 0 && (Date.now() - cache.fetched_at) < SHARED_CACHE_MAX_AGE_MS
+}
+
+function getSharedBackoffUntil(cache: SharedUsageCache): number | null {
+  return typeof cache.backoff_until === 'number' && cache.backoff_until > Date.now()
+    ? cache.backoff_until
+    : null
+}
+
+async function ensureSharedCacheDir(): Promise<void> {
+  await fs.mkdir(path.dirname(SHARED_CACHE_PATH), { recursive: true })
+}
+
+async function writeSharedCacheState(cache: SharedUsageCache): Promise<void> {
+  try {
+    await ensureSharedCacheDir()
+    await fs.writeFile(SHARED_CACHE_PATH, JSON.stringify(cache, null, 2), 'utf8')
+  } catch { /* best effort */ }
+}
+
 async function writeSharedCache(payload: ClaudeUsageResponse): Promise<void> {
-  const cache: SharedUsageCache = {
+  await writeSharedCacheState({
     fetched_at: Date.now(),
     five_hour: payload.five_hour,
     seven_day: payload.seven_day
+  })
+}
+
+async function writeSharedBackoff(backoffUntil: number): Promise<void> {
+  const previous = await readSharedCache()
+  await writeSharedCacheState({
+    fetched_at: previous?.fetched_at ?? 0,
+    five_hour: previous?.five_hour,
+    seven_day: previous?.seven_day,
+    backoff_until: backoffUntil
+  })
+}
+
+interface SharedFetchLock {
+  expires_at: number
+}
+
+interface SharedFetchLockHandle {
+  close: () => Promise<void>
+}
+
+async function tryAcquireSharedFetchLock(): Promise<SharedFetchLockHandle | null> {
+  await ensureSharedCacheDir()
+
+  while (true) {
+    try {
+      const handle = await fs.open(SHARED_FETCH_LOCK_PATH, 'wx')
+      const lock: SharedFetchLock = {
+        expires_at: Date.now() + SHARED_FETCH_LOCK_STALE_MS
+      }
+      await handle.writeFile(JSON.stringify(lock), 'utf8')
+      return {
+        close: async () => {
+          try {
+            await handle.close()
+          } catch { /* ignore */ }
+          try {
+            await fs.rm(SHARED_FETCH_LOCK_PATH, { force: true })
+          } catch { /* ignore */ }
+        }
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'EEXIST') {
+        throw error
+      }
+
+      let isStale = true
+      try {
+        const raw = await fs.readFile(SHARED_FETCH_LOCK_PATH, 'utf8')
+        const lock = JSON.parse(raw) as SharedFetchLock
+        isStale = typeof lock.expires_at !== 'number' || lock.expires_at <= Date.now()
+      } catch {
+        isStale = true
+      }
+
+      if (!isStale) {
+        return null
+      }
+
+      try {
+        await fs.rm(SHARED_FETCH_LOCK_PATH, { force: true })
+      } catch {
+        return null
+      }
+    }
   }
-  try {
-    await fs.writeFile(SHARED_CACHE_PATH, JSON.stringify(cache, null, 2), 'utf8')
-  } catch { /* best effort */ }
+}
+
+async function waitForSharedFetchResult(credentialInfo: ClaudeCredentialInfo): Promise<ProviderSnapshot> {
+  const deadline = Date.now() + SHARED_FETCH_WAIT_MS
+
+  while (Date.now() < deadline) {
+    const cached = await readSharedCache()
+    if (cached && isSharedCacheFresh(cached)) {
+      log('Claude usage: using shared cache after waiting for another client')
+      return sharedCacheToSnapshot(cached, credentialInfo)
+    }
+
+    if (cached) {
+      const sharedBackoffUntil = getSharedBackoffUntil(cached)
+      if (sharedBackoffUntil !== null) {
+        claudeUsageBackoffUntil = Math.max(claudeUsageBackoffUntil, sharedBackoffUntil)
+        log('Claude usage: shared backoff active')
+        return {
+          label: 'Claude',
+          usedPercent: null,
+          resetIso: null,
+          plan: formatClaudePlanName(credentialInfo.subscriptionType),
+          email: credentialInfo.email,
+          error: 'Rate limited (shared backoff active, will retry later)'
+        }
+      }
+    }
+
+    await new Promise(resolve => setTimeout(resolve, SHARED_FETCH_POLL_MS))
+  }
+
+  return {
+    label: 'Claude',
+    usedPercent: null,
+    resetIso: null,
+    plan: formatClaudePlanName(credentialInfo.subscriptionType),
+    email: credentialInfo.email,
+    error: 'Claude usage fetch already in progress in another MeterAI client'
+  }
 }
 // ─────────────────────────────────────────────────────────────────────
 
@@ -312,16 +452,24 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
 
   // 1. Check shared disk cache — if another client fetched recently, reuse it
   const cached = await readSharedCache()
-  if (cached && (Date.now() - cached.fetched_at) < SHARED_CACHE_MAX_AGE_MS) {
+  if (cached && isSharedCacheFresh(cached)) {
     log('Claude usage: using shared cache (fresh)')
-    const used = typeof cached.five_hour?.utilization === 'number' ? cached.five_hour.utilization : 0
-    const resetIso = typeof cached.five_hour?.resets_at === 'string' ? cached.five_hour.resets_at : null
-    return {
-      label: 'Claude',
-      usedPercent: getEffectiveUsedPercent(used, resetIso),
-      resetIso,
-      plan: formatClaudePlanName(credentialInfo.subscriptionType),
-      email: credentialInfo.email
+    return sharedCacheToSnapshot(cached, credentialInfo)
+  }
+
+  if (cached) {
+    const sharedBackoffUntil = getSharedBackoffUntil(cached)
+    if (sharedBackoffUntil !== null) {
+      claudeUsageBackoffUntil = Math.max(claudeUsageBackoffUntil, sharedBackoffUntil)
+      log('Claude usage: skipping fetch (shared backoff active)')
+      return {
+        label: 'Claude',
+        usedPercent: null,
+        resetIso: null,
+        plan: formatClaudePlanName(credentialInfo.subscriptionType),
+        email: credentialInfo.email,
+        error: 'Rate limited (shared backoff active, will retry later)'
+      }
     }
   }
 
@@ -338,7 +486,41 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
     }
   }
 
-  // 3. Actually call the API
+  // 3. Coordinate in-flight fetches across MeterAI processes
+  let fetchLock: SharedFetchLockHandle | null | undefined
+  try {
+    fetchLock = await tryAcquireSharedFetchLock()
+  } catch {
+    fetchLock = undefined
+  }
+
+  if (fetchLock === null) {
+    return waitForSharedFetchResult(credentialInfo)
+  }
+
+  const latestCached = await readSharedCache()
+  if (latestCached && isSharedCacheFresh(latestCached)) {
+    await fetchLock?.close()
+    return sharedCacheToSnapshot(latestCached, credentialInfo)
+  }
+
+  if (latestCached) {
+    const sharedBackoffUntil = getSharedBackoffUntil(latestCached)
+    if (sharedBackoffUntil !== null) {
+      claudeUsageBackoffUntil = Math.max(claudeUsageBackoffUntil, sharedBackoffUntil)
+      await fetchLock?.close()
+      return {
+        label: 'Claude',
+        usedPercent: null,
+        resetIso: null,
+        plan: formatClaudePlanName(credentialInfo.subscriptionType),
+        email: credentialInfo.email,
+        error: 'Rate limited (shared backoff active, will retry later)'
+      }
+    }
+  }
+
+  // 4. Actually call the API
   try {
     const response = await httpGet('https://api.anthropic.com/api/oauth/usage', {
       Authorization: `Bearer ${credentialInfo.token}`,
@@ -353,6 +535,8 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
       // Minimum 5min backoff even if Retry-After is 0 (API may return 0 when soft-blocked)
       const backoffSecs = Math.max(Number.isFinite(retryAfter) ? retryAfter : 0, 300)
       claudeUsageBackoffUntil = Date.now() + (backoffSecs + 2) * 1000
+      await writeSharedBackoff(claudeUsageBackoffUntil)
+      await fetchLock?.close()
       log(`Claude usage: rate limited, backing off for ${backoffSecs}s`)
       return {
         label: 'Claude',
@@ -365,6 +549,7 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
     }
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
+      await fetchLock?.close()
       return {
         label: 'Claude',
         usedPercent: null,
@@ -378,6 +563,7 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
 
     const payload = JSON.parse(response.body) as ClaudeUsageResponse
     await writeSharedCache(payload)
+    await fetchLock?.close()
 
     const used = typeof payload.five_hour?.utilization === 'number' ? payload.five_hour.utilization : 0
     const resetIso = typeof payload.five_hour?.resets_at === 'string' ? payload.five_hour.resets_at : null
@@ -390,6 +576,7 @@ async function readClaudeUsage(): Promise<ProviderSnapshot> {
       email: credentialInfo.email
     }
   } catch (error) {
+    await fetchLock?.close()
     return {
       label: 'Claude',
       usedPercent: null,
